@@ -532,6 +532,9 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
 
         base_payload = {"text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
 
+        if not log_channel:
+            log_channel = supreme_id
+
         # ── Envia para canal de log ───────────────────────────────────────────
         if log_channel:
             lp = dict(base_payload, chat_id=log_channel)
@@ -556,7 +559,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                     log.warning("[TG] Erro log_channel %s: %s", log_channel, rj.get("description"))
 
         # ── Envia para admin supremo ──────────────────────────────────────────
-        if supreme_id:
+        if supreme_id and str(supreme_id) != str(log_channel):
             sp = dict(base_payload, chat_id=supreme_id)
             r2 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=sp, timeout=4)
             if not r2.json().get("ok"):
