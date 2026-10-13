@@ -219,9 +219,9 @@
                     <div class="stat-value stat-green" id="val-receita">R$ 0,00</div>
                 </div>
                 <div class="glass-panel stat-card" style="border-color: rgba(59, 130, 246, 0.3);">
-                    <div class="stat-title" style="color:var(--blue);">Saldo Carteira C7</div>
-                    <div class="stat-value" id="val-c7-balance" style="color:var(--blue); text-shadow:0 0 10px rgba(59,130,246,0.5);">R$ 0,00</div>
-                    <button class="btn-glass" onclick="loadC7Balance()" style="margin-top:10px; font-size:0.75rem; padding:6px 12px; border-color:var(--blue); color:var(--blue); background:rgba(59,130,246,0.1);">Atualizar Saldo C7</button>
+                    <div class="stat-title" style="color:var(--blue);">Gateway União 7 Pay</div>
+                    <div class="stat-value" id="val-gateway-status" style="color:var(--blue); text-shadow:0 0 10px rgba(59,130,246,0.5); font-size:1.4rem;">ONLINE</div>
+                    <button class="btn-glass" onclick="loadGatewayStatus()" style="margin-top:10px; font-size:0.75rem; padding:6px 12px; border-color:var(--blue); color:var(--blue); background:rgba(59,130,246,0.1);">Verificar Gateway</button>
                 </div>
                 
                 <div class="glass-panel stat-card" style="border-left-color:var(--pink-accent);">
@@ -319,8 +319,8 @@
                 <div class="glass-panel stat-card" style="grid-column: span 2;">
                     <div class="stat-title">Controle de Fretes</div>
                     <div style="display:flex; flex-direction:column; gap:16px; margin-top:10px; max-width:400px;">
-                        <div><label style="font-size:0.8rem; color:var(--text-muted);">Expresso (Ex: 29,90)</label><input type="text" id="frete_expresso" class="input-glass"></div>
-                        <div><label style="font-size:0.8rem; color:var(--text-muted);">Padrão (Ex: 24,30)</label><input type="text" id="frete_padrao" class="input-glass"></div>
+                        <div><label style="font-size:0.8rem; color:var(--text-muted);">Expresso (Ex: 24,90)</label><input type="text" id="frete_expresso" class="input-glass" placeholder="24,90"></div>
+                        <div><label style="font-size:0.8rem; color:var(--text-muted);">Padrão (Ex: 19,90)</label><input type="text" id="frete_padrao" class="input-glass" placeholder="19,90"></div>
                         <button class="btn-glass" onclick="updateFrete()">SALVAR FRETES</button>
                         <div id="frete-status" style="font-size:0.75rem; color:var(--green);"></div>
                     </div>
@@ -493,7 +493,7 @@
                     loadManager();
                     loadConfig();
                     loadManagers();
-                    loadC7Balance();
+                    loadGatewayStatus();
                     renderFinanceChart('month'); // default finance view
                 }
             } catch(e) {}
@@ -709,14 +709,14 @@
             });
         }
         
-        async function loadC7Balance() {
+        async function loadGatewayStatus() {
             try {
-                const res = await fetch('/api/supreme/c7-balance');
+                const res = await fetch('/api/supreme/gateway-status');
                 const data = await res.json();
                 if(data.ok) {
-                    document.getElementById('val-c7-balance').innerText = `R$ ${data.balance.toFixed(2).replace('.', ',')}`;
+                    document.getElementById('val-gateway-status').innerText = data.status || 'ONLINE';
                 } else {
-                    document.getElementById('val-c7-balance').innerText = `R$ 0,00`;
+                    document.getElementById('val-gateway-status').innerText = 'OFFLINE';
                 }
             } catch(e) {}
         }
@@ -915,8 +915,8 @@
             try {
                 const res = await fetch('/api/config');
                 const data = await res.json();
-                document.getElementById('frete_expresso').value = data.frete_expresso || '29,90';
-                document.getElementById('frete_padrao').value = data.frete_padrao || '24,30';
+                document.getElementById('frete_expresso').value = data.frete_expresso || '24,90';
+                document.getElementById('frete_padrao').value = data.frete_padrao || '19,90';
                 
                 // Upsell
                 if (document.getElementById('upsell_active')) {

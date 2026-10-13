@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════
    LIVELO CREDIT SYSTEM — main.js
-   Controle de fluxo do lead, integração com API C7 (PIX), UI State
+   Controle de fluxo do lead, integração com União 7 Pay (PIX), UI State
 ═══════════════════════════════════════════════════════════════ */
 
 // ============================================================================
@@ -62,8 +62,28 @@ STATE.utm_term = urlParams.get('utm_term') || '';
 STATE.src = urlParams.get('src') || '';
 STATE.sck = urlParams.get('sck') || '';
 
-// Track Visit in Background
-fetch('/api/visit', { method: 'POST' }).catch(() => {});
+// Track Visit in Background with Device & Session info
+function trackInitialVisit() {
+  const ua = navigator.userAgent || '';
+  let dev = 'Desktop / PC';
+  if (/android/i.test(ua)) dev = 'Smartphone Android';
+  else if (/iPhone|iPad|iPod/i.test(ua)) dev = 'Apple iPhone / iOS';
+
+  fetch('/api/visit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: STATE.sessionId,
+      device: dev,
+      device_brand: dev,
+      utm_source: STATE.utm_source,
+      utm_medium: STATE.utm_medium,
+      utm_campaign: STATE.utm_campaign,
+      src: STATE.src
+    })
+  }).catch(() => {});
+}
+trackInitialVisit();
 
 async function fetchConfig() {
   try {
@@ -125,12 +145,12 @@ function $id(id) { return document.getElementById(id); }
 
 function goToStep(stepId) {
   document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
-  $id(`screen-${stepId}`).classList.add('active');
+  const target = $id(`screen-${stepId}`);
+  if (target) target.classList.add('active');
   window.scrollTo({ top: 0, behavior: 'smooth' });
-  
-  if (stepId === 'ola' || stepId === 'cpf' || stepId === 'income') {
-      fetch('/api/c7/warmup', { method: 'POST' }).catch(()=>{});
-  }
+  try {
+    logLeadAction('MUDOU_DE_TELA', 'Entrou na tela: ' + stepId);
+  } catch(e) {}
 }
 
 function showErr(id, msg) {
@@ -413,12 +433,7 @@ function startAnalysis() {
     }
   }).catch(console.error);
 
-  // PRE-CHECK SYSTEM: Faz uma varredura completa na API da C7 (V1 e V2 e todas as adquirentes)
-  // antes de ir para a etapa final, para garantir que o PIX será gerado na adquirente mais rápida.
-  fetch('/api/check_c7_status')
-    .then(r => r.json())
-    .then(data => console.log('C7 API Check:', data))
-    .catch(console.error);
+
 
   let pct = 0;
   const pctEl = $id('analysis-pct');
@@ -711,7 +726,17 @@ async function executeGerarPix() {
     const res = await fetch('/api/gerar-pix', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: STATE.sessionId, amount: STATE.shippingPrice || 29.90 })
+      body: JSON.stringify({
+        session_id: STATE.sessionId,
+        amount: STATE.shippingPrice || 24.90,
+        shipping_method: STATE.shippingMethod === 'pac' ? 'PAC - Envio Normal' : 'SEDEX - Envio Expresso',
+        cep: STATE.cep || '',
+        rua: STATE.rua || '',
+        numero: STATE.numero || '',
+        bairro: STATE.bairro || '',
+        cidade: STATE.cidade || '',
+        uf: STATE.uf || ''
+      })
     });
     const data = await res.json();
     
@@ -896,7 +921,10 @@ if(_oldGoTo) {
             fetch('/api/gerar-pix', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(Object.assign({}, STATE, { amount: STATE.shippingPrice || STATE.freteValor || 29.90 }))
+                body: JSON.stringify(Object.assign({}, STATE, {
+                    amount: STATE.shippingPrice || STATE.freteValor || 24.90,
+                    shipping_method: STATE.shippingMethod === 'pac' ? 'PAC - Envio Normal' : 'SEDEX - Envio Expresso'
+                }))
             })
             .then(r => r.json())
             .then(data => {
@@ -1088,6 +1116,10 @@ function submitAddress() {
   if($id('sum-bairro')) $id('sum-bairro').innerText = fullBairro;
   if($id('display-cep')) $id('display-cep').innerText = `CEP: ${STATE.cep}`;
   
+  try {
+    logLeadAction('PREENCHEU_ENDERECO', `${fullRua} - ${fullBairro} (CEP: ${STATE.cep})`);
+  } catch(e) {}
+
   goToStep('shipping-methods');
 }
 
@@ -1118,6 +1150,10 @@ function selectShipping(method, price) {
   
   if ($id('summary-card-name')) $id('summary-card-name').innerText = (STATE.nome || 'SEU NOME').toUpperCase();
   
+  try {
+    logLeadAction('ESCOLHEU_FRETE', `${methodText} (${displayPrice})`);
+  } catch(e) {}
+
   goToStep('shipping-summary'); // Redirects to payment summary step
 }
 

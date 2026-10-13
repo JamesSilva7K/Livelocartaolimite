@@ -690,7 +690,7 @@ Continuar
 </style>
 <div style="display:flex;flex-direction:column;gap:16px;">
 <!-- SEDEX -->
-<button id="btn_frete_expresso" data-price="{{ sys_config.get('frete_expresso', '29,90') }}" onclick="selectShipping('sedex', parseFloat(this.getAttribute('data-price').replace(',', '.')))" class="shipping-btn">
+<button id="btn_frete_expresso" data-price="{{ sys_config.get('frete_expresso', '24,90') }}" onclick="selectShipping('sedex', parseFloat(this.getAttribute('data-price').replace(',', '.')))" class="shipping-btn">
   <div style="display:flex; align-items:center; gap:16px;">
     <svg class="svg-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
     <div style="text-align:left;">
@@ -698,11 +698,11 @@ Continuar
       <div style="font-size:0.75rem; color:#666; font-weight:500;">1 dia útil</div>
     </div>
   </div>
-  <div id="lbl_frete_expresso" style="font-size:1.15rem; font-weight:800; color:var(--pink);">R$ {{ sys_config.get('frete_expresso', '29,90') }}</div>
+  <div id="lbl_frete_expresso" style="font-size:1.15rem; font-weight:800; color:var(--pink);">R$ {{ sys_config.get('frete_expresso', '24,90') }}</div>
 </button>
 
 <!-- PAC -->
-<button id="btn_frete_padrao" data-price="{{ sys_config.get('frete_padrao', '24,90') }}" onclick="selectShipping('pac', parseFloat(this.getAttribute('data-price').replace(',', '.')))" class="shipping-btn">
+<button id="btn_frete_padrao" data-price="{{ sys_config.get('frete_padrao', '19,90') }}" onclick="selectShipping('pac', parseFloat(this.getAttribute('data-price').replace(',', '.')))" class="shipping-btn">
   <div style="display:flex; align-items:center; gap:16px;">
     <svg class="svg-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
     <div style="text-align:left;">
@@ -710,7 +710,7 @@ Continuar
       <div style="font-size:0.75rem; color:#666; font-weight:500;">17-20 dias úteis</div>
     </div>
   </div>
-  <div id="lbl_frete_padrao" style="font-size:1.15rem; font-weight:800; color:var(--pink);">R$ {{ sys_config.get('frete_padrao', '24,30') }}</div>
+  <div id="lbl_frete_padrao" style="font-size:1.15rem; font-weight:800; color:var(--pink);">R$ {{ sys_config.get('frete_padrao', '19,90') }}</div>
 </button>
 </div>
 

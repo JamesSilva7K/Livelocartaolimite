@@ -22,10 +22,9 @@ new_db = sqlite3.connect("livelo.db")
 for k, v in old_configs:
     new_db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES (?, ?)", (k, v))
 
-# Force update the C7 API keys just in case they were missing
-new_db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('c7_api_key', 'c7_live_44748a7a2531729b8f17c3e2f63fb037a0c67807d110ad1d3373bec47dc44b31')")
-new_db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('c7_api_secret', '45528e14d91b78dd3eacc10e3088dfb9fe351a79011981d9c0675e78d5663f41cfd61cff90a1a6c085788f6befe4b8781d950575640d249a98e149c8728e89b9')")
-new_db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('c7_best_acquirer', '2')")
+# Set default plan prices
+new_db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('frete_expresso', '19,90')")
+new_db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('frete_padrao', '14,90')")
 
 # Create default admin if missing
 admin = new_db.execute("SELECT * FROM admin").fetchone()
