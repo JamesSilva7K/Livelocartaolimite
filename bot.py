@@ -297,8 +297,10 @@ def cmd_gateways(message):
         active_gw = m.get("active_gateway", "elitepay")
         ep = m.get("elitepay", {})
         un = m.get("uniaopay", {})
-        ep_status_ico = "🟢 ONLINE" if ep.get("status") == "online" else ("🟡 INSTÁVEL" if ep.get("status") == "unstable" else "🔴 FORA DO AR")
-        un_status_ico = "🟢 ONLINE" if un.get("status") == "online" else ("🟡 INSTÁVEL" if un.get("status") == "unstable" else "🔴 FORA DO AR")
+        ep_st = str(ep.get("status", "")).lower()
+        ep_status_ico = "🟢 ONLINE" if ep_st == "online" else ("🟡 INSTÁVEL" if ep_st == "unstable" else "🔴 FORA DO AR")
+        un_st = str(un.get("status", "")).lower()
+        un_status_ico = "🟢 ONLINE" if un_st == "online" else ("🟡 INSTÁVEL" if un_st == "unstable" else "🔴 FORA DO AR")
         active_name_badge = "🟢 <b>Elite PAYbr</b>" if active_gw == "elitepay" else "🟢 <b>União 7 Pay</b>"
         
         txt = (
@@ -324,13 +326,13 @@ def cmd_gateways(message):
         markup = InlineKeyboardMarkup(row_width=2)
         if active_gw == "elitepay":
             markup.add(
-                InlineKeyboardButton("✅ Elite PAYbr (Ativo)", callback_data="noop"),
-                InlineKeyboardButton("🔄 Mudar p/ União 7 Pay", callback_data="set_gw_uniaopay")
+                InlineKeyboardButton("✅ Elite PAYbr (Principal)", callback_data="noop"),
+                InlineKeyboardButton("🔄 Definir União 7 Pay Principal", callback_data="set_gw_uniaopay")
             )
         else:
             markup.add(
-                InlineKeyboardButton("🔄 Mudar p/ Elite PAYbr", callback_data="set_gw_elitepay"),
-                InlineKeyboardButton("✅ União 7 Pay (Ativo)", callback_data="noop")
+                InlineKeyboardButton("🔄 Definir Elite PAYbr Principal", callback_data="set_gw_elitepay"),
+                InlineKeyboardButton("✅ União 7 Pay (Principal)", callback_data="noop")
             )
         markup.add(
             InlineKeyboardButton("🧪 Testar Latência / Ping", callback_data="test_gateways"),
@@ -617,8 +619,10 @@ def callback_handler(call):
             ep = m.get("elitepay", {})
             un = m.get("uniaopay", {})
             
-            ep_status_ico = "🟢 ONLINE" if ep.get("status") == "online" else ("🟡 INSTÁVEL" if ep.get("status") == "unstable" else "🔴 FORA DO AR")
-            un_status_ico = "🟢 ONLINE" if un.get("status") == "online" else ("🟡 INSTÁVEL" if un.get("status") == "unstable" else "🔴 FORA DO AR")
+            ep_st = str(ep.get("status", "")).lower()
+            ep_status_ico = "🟢 ONLINE" if ep_st == "online" else ("🟡 INSTÁVEL" if ep_st == "unstable" else "🔴 FORA DO AR")
+            un_st = str(un.get("status", "")).lower()
+            un_status_ico = "🟢 ONLINE" if un_st == "online" else ("🟡 INSTÁVEL" if un_st == "unstable" else "🔴 FORA DO AR")
             
             active_name_badge = "🟢 <b>Elite PAYbr</b>" if active_gw == "elitepay" else "🟢 <b>União 7 Pay</b>"
             
@@ -646,13 +650,13 @@ def callback_handler(call):
             markup = InlineKeyboardMarkup(row_width=2)
             if active_gw == "elitepay":
                 markup.add(
-                    InlineKeyboardButton("✅ Elite PAYbr (Ativo)", callback_data="noop"),
-                    InlineKeyboardButton("🔄 Mudar p/ União 7 Pay", callback_data="set_gw_uniaopay")
+                    InlineKeyboardButton("✅ Elite PAYbr (Principal)", callback_data="noop"),
+                    InlineKeyboardButton("🔄 Definir União 7 Pay Principal", callback_data="set_gw_uniaopay")
                 )
             else:
                 markup.add(
-                    InlineKeyboardButton("🔄 Mudar p/ Elite PAYbr", callback_data="set_gw_elitepay"),
-                    InlineKeyboardButton("✅ União 7 Pay (Ativo)", callback_data="noop")
+                    InlineKeyboardButton("🔄 Definir Elite PAYbr Principal", callback_data="set_gw_elitepay"),
+                    InlineKeyboardButton("✅ União 7 Pay (Principal)", callback_data="noop")
                 )
                 
             markup.add(
@@ -669,7 +673,7 @@ def callback_handler(call):
         res = api_call("set_active_gateway", {"gateway": target_gw})
         if res.get("ok"):
             gw_name = res.get("name", target_gw)
-            bot.answer_callback_query(call.id, f"✅ Gateway alterado para {gw_name}!")
+            bot.answer_callback_query(call.id, f"✅ {gw_name} agora é o Gateway Principal!")
             call.data = "menu_gateways"
             callback_handler(call)
         else:
