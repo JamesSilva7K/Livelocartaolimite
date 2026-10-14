@@ -252,7 +252,7 @@ html, body {
 .shipping-opt:active { transform: scale(0.98); }
 .shipping-opt.selected { border-color: var(--pink); background: #FFF0F8; transform: scale(0.98); }
 .ship-icon { width: 46px; height: 46px; border-radius: 12px; background: #FFF0F8; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 1.5rem; }
-.ship-info {  }
+.ship-info { flex: 1; min-width: 0; }
 .ship-name { font-size: 0.95rem; font-weight: 700; color: var(--text); }
 .ship-time { font-size: 0.8rem; color: var(--text-muted); margin-top: 2px; }
 .ship-price { font-size: 1rem; font-weight: 800; color: var(--pink); white-space: nowrap; }
@@ -320,9 +320,81 @@ html, body {
 .adv-card-top { display: flex; justify-content: space-between; align-items: flex-start; }
 .adv-chip { margin-top: auto; margin-bottom: 12px; }
 .adv-card-number { font-family: 'Courier New', monospace; font-size: 1.15rem; color: white; letter-spacing: 2px; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,0.3); margin-bottom: 12px; display: flex; justify-content: space-between; }
-.adv-card-bottom { display: flex; justify-content: space-between; align-items: flex-end; color: white; }
-.adv-card-label { font-size: 0.5rem; letter-spacing: 1px; opacity: 0.8; margin-bottom: 3px; font-family: Inter, sans-serif; }
-.adv-card-value { font-size: 0.8rem; font-weight: 600; letter-spacing: 1px; text-shadow: 0 1px 2px rgba(0,0,0,0.3); text-transform: uppercase; font-family: Inter, sans-serif; }
+.adv-card-bottom {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: flex-end !important;
+  gap: 12px !important;
+  width: 100% !important;
+  min-height: 38px !important;
+  position: relative !important;
+  z-index: 2 !important;
+}
+.adv-card-col-name {
+  flex: 1 1 0% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-align: left !important;
+}
+.adv-card-col-right {
+  display: flex !important;
+  align-items: flex-end !important;
+  gap: 10px !important;
+  flex-shrink: 0 !important;
+}
+.adv-card-validity {
+  flex-shrink: 0 !important;
+  text-align: left !important;
+}
+.adv-card-brand {
+  flex-shrink: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+}
+.adv-card-label {
+  font-size: 0.52rem !important;
+  letter-spacing: 1px !important;
+  opacity: 0.85 !important;
+  margin-bottom: 3px !important;
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+}
+.adv-card-value {
+  font-size: 0.76rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px !important;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
+  text-transform: uppercase !important;
+  font-family: 'Inter', -apple-system, sans-serif !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  display: block !important;
+  max-width: 100% !important;
+  line-height: 1.25 !important;
+}
+.card-row-bottom {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: flex-end !important;
+  gap: 10px !important;
+  width: 100% !important;
+  position: relative !important;
+  z-index: 2 !important;
+}
+.card-col-name {
+  flex: 1 1 0% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-align: left !important;
+}
+.card-col-right {
+  display: flex !important;
+  align-items: flex-end !important;
+  gap: 8px !important;
+  flex-shrink: 0 !important;
+}
 
 .tpl-active-label { text-align: center; font-size: 0.95rem; font-weight: 800; color: var(--pink); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.05em; }
 .tpl-scroll-container { width: 100%; padding: 25px 10px 35px 10px; margin-top: -15px; overflow-x: auto; overflow-y: visible; margin-bottom: 8px; -webkit-overflow-scrolling: touch; scrollbar-width: none; scroll-behavior: smooth; }

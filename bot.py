@@ -236,7 +236,158 @@ def cmd_setlog(message):
     bot.reply_to(message, "Selecione para qual módulo este chat será o canal de Log:", reply_markup=markup)
 
 
-# --- MENU INICIAL ---
+# --- MENU INICIAL & COMANDOS DIRETOS ---
+@bot.message_handler(commands=['dashboard', 'financeiro', 'metricas', 'pix'])
+def cmd_dashboard(message):
+    if not is_admin(message.chat.id, message.from_user.id):
+        bot.send_message(message.chat.id, "Acesso negado.")
+        return
+    res = api_call("get_financeiro")
+    if res.get("ok"):
+        f = res.get("stats", {})
+        txt = (
+            "📈 <b>DASHBOARD SUPREMO & MÉTRICAS DE VENDAS</b> 📈\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🛡️ <b>Blindagem Ant-Scrape:</b> {f.get('security_status', '🟢 Ativa')}\n"
+            f"📡 <b>Status da API:</b> {f.get('api_status', '🟢 Sincronizada')}\n"
+            f"🖥️ <b>Host:</b> {f.get('host_status', '🟢 Online')}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 <b>Entradas (Leads no Funil):</b> <b>{f.get('qtd_leads', 0)}</b>\n"
+            f"💳 <b>Cartões Personalizados:</b> <b>{f.get('cartoes_feitos', 0)}</b>\n"
+            f"🧾 <b>PIX Gerados (Total):</b> <b>{f.get('pagamentos_gerados', 0)}</b>\n"
+            f"💸 <b>PIX Pagos (Aprovados):</b> 🟢 <b>{f.get('qtd_pago', 0)}</b>\n"
+            f"⏳ <b>PIX Pendentes (Aguardando):</b> 🟡 <b>{f.get('qtd_pendente', 0)}</b>\n"
+            f"❌ <b>PIX Cancelados / Recusados:</b> 🔴 <b>{f.get('qtd_cancelado', 0)}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>FATURAMENTO TOTAL REAL:</b> 🟢 <b>R$ {f.get('total_pago', '0,00')}</b>\n"
+        )
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🔄 Atualizar Métricas", callback_data="menu_financeiro"),
+            InlineKeyboardButton("💳 Ver Gateways", callback_data="menu_gateways")
+        )
+        markup.add(InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_main"))
+        bot.send_message(message.chat.id, txt, reply_markup=markup, parse_mode="HTML")
+    else:
+        bot.send_message(message.chat.id, "❌ Erro ao consultar dados do dashboard financeiro.")
+
+
+@bot.message_handler(commands=['gerente', 'manager'])
+def cmd_gerente(message):
+    if not is_supreme(message.chat.id, message.from_user.id):
+        bot.send_message(message.chat.id, "Acesso restrito ao Admin Supremo.")
+        return
+    show_manager_profile(message.chat.id)
+
+
+@bot.message_handler(commands=['gateways', 'gateway'])
+def cmd_gateways(message):
+    if not is_supreme(message.chat.id, message.from_user.id):
+        bot.send_message(message.chat.id, "Acesso restrito ao Admin Supremo.")
+        return
+    res = api_call("get_gateway_metrics")
+    if res.get("ok"):
+        m = res.get("metrics", {})
+        active_gw = m.get("active_gateway", "elitepay")
+        ep = m.get("elitepay", {})
+        un = m.get("uniaopay", {})
+        ep_status_ico = "🟢 ONLINE" if ep.get("status") == "online" else ("🟡 INSTÁVEL" if ep.get("status") == "unstable" else "🔴 FORA DO AR")
+        un_status_ico = "🟢 ONLINE" if un.get("status") == "online" else ("🟡 INSTÁVEL" if un.get("status") == "unstable" else "🔴 FORA DO AR")
+        active_name_badge = "🟢 <b>Elite PAYbr</b>" if active_gw == "elitepay" else "🟢 <b>União 7 Pay</b>"
+        
+        txt = (
+            "👑 <b>PAINEL SUPREMO DE GATEWAYS PIX</b>\n"
+            "<i>Métricas 100% reais, auditadas e integradas ao vivo.</i>\n\n"
+            f"⚡ <b>GATEWAY PRINCIPAL ATIVO:</b> {active_name_badge}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💎 <b>ELITE PAYbr</b>  {ep_status_ico}\n"
+            f"⏱️ <b>Latência:</b> <code>{ep.get('ping_ms', 'N/A')}</code>\n"
+            f"💰 <b>Saldo em Conta:</b> <code>R$ {ep.get('balance', '0,00')}</code>\n"
+            f"📊 <b>PIX Gerados:</b> {ep.get('qtd_gerado', 0)} (R$ {ep.get('total_gerado', '0,00')})\n"
+            f"💸 <b>PIX Pagos:</b> {ep.get('qtd_pago', 0)} (R$ {ep.get('total_pago', '0,00')})\n"
+            f"📈 <b>Conversão Real:</b> <b>{ep.get('conversao', '0.0%')}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔷 <b>UNIÃO 7 PAY</b>  {un_status_ico}\n"
+            f"⏱️ <b>Latência:</b> <code>{un.get('ping_ms', 'N/A')}</code>\n"
+            f"📊 <b>PIX Gerados:</b> {un.get('qtd_gerado', 0)} (R$ {un.get('total_gerado', '0,00')})\n"
+            f"💸 <b>PIX Pagos:</b> {un.get('qtd_pago', 0)} (R$ {un.get('total_pago', '0,00')})\n"
+            f"📈 <b>Conversão Real:</b> <b>{un.get('conversao', '0.0%')}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>Dica: Alterne instantaneamente o gateway ativo com os botões abaixo.</i>"
+        )
+        markup = InlineKeyboardMarkup(row_width=2)
+        if active_gw == "elitepay":
+            markup.add(
+                InlineKeyboardButton("✅ Elite PAYbr (Ativo)", callback_data="noop"),
+                InlineKeyboardButton("🔄 Mudar p/ União 7 Pay", callback_data="set_gw_uniaopay")
+            )
+        else:
+            markup.add(
+                InlineKeyboardButton("🔄 Mudar p/ Elite PAYbr", callback_data="set_gw_elitepay"),
+                InlineKeyboardButton("✅ União 7 Pay (Ativo)", callback_data="noop")
+            )
+        markup.add(
+            InlineKeyboardButton("🧪 Testar Latência / Ping", callback_data="test_gateways"),
+            InlineKeyboardButton("🔄 Atualizar Métricas", callback_data="menu_gateways")
+        )
+        markup.add(InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_main"))
+        bot.send_message(message.chat.id, txt, reply_markup=markup, parse_mode="HTML")
+    else:
+        bot.send_message(message.chat.id, "❌ Erro ao consultar métricas dos gateways.")
+
+
+def show_manager_profile(chat_id, message_id=None):
+    res = api_call("get_config")
+    cfg = res.get("config", {}) if res.get("ok") else {}
+    name = cfg.get('mgr_name', 'Lucas Cardoso')
+    years = cfg.get('mgr_years', '3')
+    whatsapp = cfg.get('mgr_whatsapp', '11987654321')
+    avatar = cfg.get('mgr_avatar', '')
+    
+    caption = (
+        "👩‍💼 <b>PERFIL OFICIAL DA GERENTE DE CONTAS</b>\n"
+        "<i>Este é o perfil real que aparece na página para os leads conversarem no WhatsApp.</i>\n\n"
+        f"👤 <b>Nome Oficial:</b> <b>{name}</b>\n"
+        f"📱 <b>WhatsApp de Contato:</b> <code>{whatsapp}</code>\n"
+        f"📅 <b>Tempo na Empresa:</b> {years} anos\n"
+        f"💬 <b>Selo de Confiabilidade:</b> Melhor Gerente Livelo\n\n"
+        "👇 <b>Selecione o que deseja alterar via botões interativos:</b>"
+    )
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✏️ Alterar Nome", callback_data="set_mgr_name"),
+        InlineKeyboardButton("📱 Alterar WhatsApp", callback_data="set_mgr_whatsapp")
+    )
+    markup.add(
+        InlineKeyboardButton("📅 Alterar Anos", callback_data="set_mgr_years"),
+        InlineKeyboardButton("📸 Alterar Foto Real", callback_data="wait_img_avatar")
+    )
+    markup.add(
+        InlineKeyboardButton("🔄 Atualizar Preview", callback_data="menu_gerente"),
+        InlineKeyboardButton("🔙 Menu Principal", callback_data="menu_main")
+    )
+    
+    if avatar and avatar.startswith("data:image"):
+        import base64
+        from io import BytesIO
+        img_bytes = base64.b64decode(avatar.split(",")[1])
+        bot.send_photo(chat_id, BytesIO(img_bytes), caption=caption, reply_markup=markup, parse_mode="HTML")
+    elif avatar and (avatar.startswith("http://") or avatar.startswith("https://")):
+        try:
+            bot.send_photo(chat_id, avatar, caption=caption, reply_markup=markup, parse_mode="HTML")
+        except:
+            if message_id:
+                bot.edit_message_text(caption + "\n\n<i>[Foto ativa]</i>", chat_id, message_id, reply_markup=markup, parse_mode="HTML")
+            else:
+                bot.send_message(chat_id, caption + "\n\n<i>[Foto ativa]</i>", reply_markup=markup, parse_mode="HTML")
+    else:
+        if message_id:
+            bot.edit_message_text(caption + "\n\n<i>[Foto padrão ativa - envie uma foto para personalizar]</i>", chat_id, message_id, reply_markup=markup, parse_mode="HTML")
+        else:
+            bot.send_message(chat_id, caption + "\n\n<i>[Foto padrão ativa - envie uma foto para personalizar]</i>", reply_markup=markup, parse_mode="HTML")
+
+
 @bot.message_handler(commands=["start", "menu"])
 def send_welcome(message):
     if not is_admin(message.chat.id, message.from_user.id):
@@ -249,15 +400,19 @@ def show_main_menu(chat_id, user_id=None, message_id=None):
     
     if is_supreme(chat_id, user_id):
         markup.add(
-            InlineKeyboardButton("⚙️ Config Gerais", callback_data="menu_config"),
-            InlineKeyboardButton("📢 Canais de Logs", callback_data="menu_logs")
-        )
-        markup.add(
-            InlineKeyboardButton("👥 Leads Recentes", callback_data="menu_leads"),
-            InlineKeyboardButton("💰 Pagamentos", callback_data="menu_pagamentos")
-        )
-        markup.add(
+            InlineKeyboardButton("💳 Gateways de Pagamento", callback_data="menu_gateways"),
             InlineKeyboardButton("📊 Dashboard Financeiro", callback_data="menu_financeiro")
+        )
+        markup.add(
+            InlineKeyboardButton("👩‍💼 Gerente de Contas", callback_data="menu_gerente"),
+            InlineKeyboardButton("⚙️ Config Gerais", callback_data="menu_config")
+        )
+        markup.add(
+            InlineKeyboardButton("📢 Canais de Logs", callback_data="menu_logs"),
+            InlineKeyboardButton("👥 Leads Recentes", callback_data="menu_leads")
+        )
+        markup.add(
+            InlineKeyboardButton("💰 Pagamentos", callback_data="menu_pagamentos")
         )
     else:
         # Normal admin sees leads and dashboard
@@ -268,7 +423,13 @@ def show_main_menu(chat_id, user_id=None, message_id=None):
             InlineKeyboardButton("📊 Dashboard Financeiro", callback_data="menu_financeiro")
         )
         
-    text = "👑 <b>Painel Supremo Livelo</b>\n\nCentro de Comando Ativo. Escolha uma opção:"
+    text = (
+        "👑 <b>Painel Supremo Livelo</b>\n\n"
+        "Centro de Comando Ativo. Escolha uma opção pelos botões ou use os comandos rápidos:\n"
+        "• /dashboard — Métricas de PIX e Vendas\n"
+        "• /gateways — Painel de Gateways & Troca em 1 Clique\n"
+        "• /gerente — Foto Real, WhatsApp e Dados da Gerente"
+    )
     
     if message_id:
         bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
@@ -298,28 +459,11 @@ def callback_handler(call):
         show_main_menu(chat_id, user_id, message_id=msg_id)
         
 
+    elif data == "menu_gerente" and is_supreme(chat_id, user_id):
+        show_manager_profile(chat_id, message_id=msg_id)
+
     elif data == "preview_manager" and is_supreme(chat_id, user_id):
-        res = api_call("get_config")
-        cfg = res.get("config", {}) if res.get("ok") else {}
-        name = cfg.get('mgr_name', 'Não def.')
-        years = cfg.get('mgr_years', 'Não def.')
-        avatar = cfg.get('mgr_avatar', '')
-        
-        caption = f"👩‍💼 <b>Preview da Gerente</b>\n\n" \
-                  f"<b>Nome:</b> {name}\n" \
-                  f"<b>Anos na Empresa:</b> {years}\n" \
-                  f"<i>Este será o visual exibido no painel do lead (Melhor gerente 2023-{years})</i>"
-                  
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("✅ Confirmar", callback_data="menu_config"))
-        
-        if avatar.startswith("data:image"):
-            import base64
-            from io import BytesIO
-            img_data = base64.b64decode(avatar.split(",")[1])
-            bot.send_photo(chat_id, BytesIO(img_data), caption=caption, reply_markup=markup, parse_mode="HTML")
-        else:
-            bot.send_message(chat_id, caption + "\n[Sem foto carregada]", reply_markup=markup, parse_mode="HTML")
+        show_manager_profile(chat_id, message_id=msg_id)
 
     elif data == "menu_config" and is_supreme(chat_id, user_id):
         res = api_call("get_config")
@@ -327,16 +471,17 @@ def callback_handler(call):
         
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(
-            InlineKeyboardButton(f"🔑 API Token CPF", callback_data="set_cpf_token"),
-            InlineKeyboardButton(f"💬 Texto do WhatsApp", callback_data="set_wa_text"),
+            InlineKeyboardButton(f"👩‍💼 Painel da Gerente (Foto/Perfil)", callback_data="menu_gerente"),
+            InlineKeyboardButton(f"📱 WhatsApp Gerente: {cfg.get('mgr_whatsapp', 'Não def.')}", callback_data="set_mgr_whatsapp"),
             InlineKeyboardButton(f"👩‍💼 Nome da Gerente: {cfg.get('mgr_name', 'Não def.')}", callback_data="set_mgr_name"),
             InlineKeyboardButton(f"📅 Anos de Empresa: {cfg.get('mgr_years', 'Não def.')}", callback_data="set_mgr_years"),
+            InlineKeyboardButton(f"🔑 API Token CPF", callback_data="set_cpf_token"),
+            InlineKeyboardButton(f"💬 Texto do WhatsApp", callback_data="set_wa_text"),
             InlineKeyboardButton(f"🚚 Valor Frete Expresso: R$ {cfg.get('frete_expresso', '24,90')}", callback_data="set_frete_expresso"),
             InlineKeyboardButton(f"🚚 Valor Frete Padrão: R$ {cfg.get('frete_padrao', '19,90')}", callback_data="set_frete_padrao"),
             InlineKeyboardButton(f"🖼️ Alterar Avatar Gerente", callback_data="wait_img_avatar"),
             InlineKeyboardButton(f"🖼️ Alterar Logo do Site", callback_data="wait_img_logo"),
             InlineKeyboardButton(f"🖼️ Alterar Favicon", callback_data="wait_img_favicon"),
-            InlineKeyboardButton("👁️ Preview Gerente", callback_data="preview_manager"),
             InlineKeyboardButton("🔙 Voltar", callback_data="menu_main")
         )
         bot.edit_message_text("⚙️ <b>Configurações Gerais</b>\nSelecione o que deseja alterar:", chat_id, msg_id, reply_markup=markup)
@@ -380,6 +525,7 @@ def callback_handler(call):
             "set_cpf_token": ("cpf_token", "Digite o token de validação da API CPF:"),
             "set_wa_text": ("wa_text", "Digite o texto padrão da Gerente no WhatsApp:"),
             "set_mgr_name": ("mgr_name", "Digite o novo Nome da Gerente:"),
+            "set_mgr_whatsapp": ("mgr_whatsapp", "Digite o número de WhatsApp da Gerente com DDD (ex: 11987654321):"),
             "set_mgr_years": ("mgr_years", "Digite a quantidade de Anos na Empresa:"),
             "set_frete_expresso": ("frete_expresso", "Digite o valor do frete expresso (ex: 24,90):"),
             "set_frete_padrao": ("frete_padrao", "Digite o valor do frete padrão (ex: 19,90):"),
@@ -457,6 +603,81 @@ def callback_handler(call):
         else:
             bot.answer_callback_query(call.id, "Erro ao carregar painel financeiro.")
 
+    elif data == "menu_gateways" and is_supreme(chat_id, user_id):
+        res = api_call("get_gateway_metrics")
+        if res.get("ok"):
+            m = res.get("metrics", {})
+            active_gw = m.get("active_gateway", "elitepay")
+            ep = m.get("elitepay", {})
+            un = m.get("uniaopay", {})
+            
+            ep_status_ico = "🟢 ONLINE" if ep.get("status") == "online" else ("🟡 INSTÁVEL" if ep.get("status") == "unstable" else "🔴 FORA DO AR")
+            un_status_ico = "🟢 ONLINE" if un.get("status") == "online" else ("🟡 INSTÁVEL" if un.get("status") == "unstable" else "🔴 FORA DO AR")
+            
+            active_name_badge = "🟢 <b>Elite PAYbr</b>" if active_gw == "elitepay" else "🟢 <b>União 7 Pay</b>"
+            
+            txt = (
+                "👑 <b>PAINEL SUPREMO DE GATEWAYS PIX</b>\n"
+                "<i>Métricas 100% reais, auditadas e integradas ao vivo.</i>\n\n"
+                f"⚡ <b>GATEWAY PRINCIPAL ATIVO:</b> {active_name_badge}\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>ELITE PAYbr</b>  {ep_status_ico}\n"
+                f"⏱️ <b>Latência:</b> <code>{ep.get('ping_ms', 'N/A')}</code>\n"
+                f"💰 <b>Saldo em Conta:</b> <code>R$ {ep.get('balance', '0,00')}</code>\n"
+                f"📊 <b>PIX Gerados:</b> {ep.get('qtd_gerado', 0)} (R$ {ep.get('total_gerado', '0,00')})\n"
+                f"💸 <b>PIX Pagos:</b> {ep.get('qtd_pago', 0)} (R$ {ep.get('total_pago', '0,00')})\n"
+                f"📈 <b>Conversão Real:</b> <b>{ep.get('conversao', '0.0%')}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔷 <b>UNIÃO 7 PAY</b>  {un_status_ico}\n"
+                f"⏱️ <b>Latência:</b> <code>{un.get('ping_ms', 'N/A')}</code>\n"
+                f"📊 <b>PIX Gerados:</b> {un.get('qtd_gerado', 0)} (R$ {un.get('total_gerado', '0,00')})\n"
+                f"💸 <b>PIX Pagos:</b> {un.get('qtd_pago', 0)} (R$ {un.get('total_pago', '0,00')})\n"
+                f"📈 <b>Conversão Real:</b> <b>{un.get('conversao', '0.0%')}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 <i>Dica: Você pode alternar instantaneamente o gateway ativo com os botões abaixo. Se houver qualquer instabilidade no gateway principal, o sistema ativa o failover automático para a reserva e avisa você aqui!</i>"
+            )
+            
+            markup = InlineKeyboardMarkup(row_width=2)
+            if active_gw == "elitepay":
+                markup.add(
+                    InlineKeyboardButton("✅ Elite PAYbr (Ativo)", callback_data="noop"),
+                    InlineKeyboardButton("🔄 Mudar p/ União 7 Pay", callback_data="set_gw_uniaopay")
+                )
+            else:
+                markup.add(
+                    InlineKeyboardButton("🔄 Mudar p/ Elite PAYbr", callback_data="set_gw_elitepay"),
+                    InlineKeyboardButton("✅ União 7 Pay (Ativo)", callback_data="noop")
+                )
+                
+            markup.add(
+                InlineKeyboardButton("🧪 Testar Latência / Ping", callback_data="test_gateways"),
+                InlineKeyboardButton("🔄 Atualizar Métricas", callback_data="menu_gateways")
+            )
+            markup.add(InlineKeyboardButton("🔙 Voltar", callback_data="menu_main"))
+            bot.edit_message_text(txt, chat_id, msg_id, reply_markup=markup, parse_mode="HTML")
+        else:
+            bot.answer_callback_query(call.id, "Erro ao carregar métricas dos gateways.")
+
+    elif data in ("set_gw_elitepay", "set_gw_uniaopay") and is_supreme(chat_id, user_id):
+        target_gw = "elitepay" if data == "set_gw_elitepay" else "uniaopay"
+        res = api_call("set_active_gateway", {"gateway": target_gw})
+        if res.get("ok"):
+            gw_name = res.get("name", target_gw)
+            bot.answer_callback_query(call.id, f"✅ Gateway alterado para {gw_name}!")
+            call.data = "menu_gateways"
+            callback_handler(call)
+        else:
+            bot.answer_callback_query(call.id, f"Erro: {res.get('error', 'Falha ao alterar')}")
+
+    elif data == "test_gateways" and is_supreme(chat_id, user_id):
+        bot.answer_callback_query(call.id, "Testando latência e saúde das APIs...")
+        call.data = "menu_gateways"
+        callback_handler(call)
+
+    elif data == "noop":
+        bot.answer_callback_query(call.id, "Este gateway já está ativo como principal!")
+
+
 
 
 @bot.message_handler(func=lambda m: str(m.chat.id) in user_states and user_states[str(m.chat.id)]["action"] == "wait_text")
@@ -497,10 +718,19 @@ def handle_text_input(message):
             bot.send_message(chat_id, "❌ <b>Formato Inválido!</b> Anos de empresa deve ser apenas números. Ex: <code>5</code>.\nOperação cancelada.")
             del user_states[chat_id]
             return
+
+    elif db_key == "mgr_whatsapp":
+        clean_wa = re.sub(r"\D", "", val)
+        if len(clean_wa) < 10 or len(clean_wa) > 13:
+            bot.send_message(chat_id, "❌ <b>WhatsApp Inválido!</b> Informe com DDD (Ex: <code>11987654321</code>).\nOperação cancelada.")
+            del user_states[chat_id]
+            return
+        val = clean_wa
     
     res = api_call("set_config", {db_key: val})
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔙 Voltar para Configs", callback_data="menu_config"))
+    back_target = "menu_gerente" if "mgr_" in db_key else "menu_config"
+    markup.add(InlineKeyboardButton("🔙 Voltar", callback_data=back_target))
     
     if res.get("ok"):
         bot.edit_message_text(f"✅ Valor alterado com sucesso para: <b>{val}</b>", chat_id, state["msg_id"], reply_markup=markup)

