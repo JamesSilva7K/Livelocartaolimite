@@ -9,27 +9,33 @@ import os
 # ==========================================
 def get_db_token():
     try:
-        db_path = os.path.join(os.path.dirname(__file__), "livelo.db")
-        if not os.path.exists(db_path):
-            db_path = os.path.join(os.path.dirname(__file__), "database.db")
-        conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT value FROM sys_config WHERE key='telegram_token'").fetchone()
-        conn.close()
-        return row[0] if row else None
+        for p in ["/tmp/livelo.db", os.path.join(os.path.dirname(__file__), "livelo.db"), os.path.join(os.path.dirname(__file__), "database.db")]:
+            if os.path.exists(p):
+                try:
+                    conn = sqlite3.connect(p)
+                    row = conn.execute("SELECT value FROM sys_config WHERE key='telegram_token'").fetchone()
+                    conn.close()
+                    if row and row[0] and len(row[0].strip()) > 20 and ":" in row[0]:
+                        return row[0].strip()
+                except:
+                    pass
     except:
-        return None
+        pass
+    return None
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", os.environ.get("BOT_TOKEN"))
+BOT_TOKEN = get_db_token()
 if not BOT_TOKEN:
-    BOT_TOKEN = get_db_token()
-if not BOT_TOKEN or BOT_TOKEN == "SEU_TOKEN_AQUI":
+    env_t = (os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN") or "").strip()
+    if env_t and len(env_t) > 20 and ":" in env_t and env_t != "SEU_TOKEN_AQUI":
+        BOT_TOKEN = env_t
+if not BOT_TOKEN:
     BOT_TOKEN = "8390380990:AAGeDvwbsOz7cHXBy22y0vbR4V6DOEFzeA8"
 
 ADMIN_CHAT_ID  = os.environ.get("ID_ADMIN_SUPREMO", os.environ.get("SUPREME_ADMIN_ID", os.environ.get("ADMIN_CHAT_ID", "8932547795")))
-BOT_SECRET     = os.environ.get("BOT_SECRET", "livelo_bot_secret_2026")
-BASE_URL       = os.environ.get("RENDER_EXTERNAL_URL", os.environ.get("VERCEL_PROJECT_PRODUCTION_URL", "http://localhost:5050"))
-# Se a Vercel URL não tiver https, garantimos que tenha:
+BOT_SECRET     = os.environ.get("BOT_SECRET", "9bd3434165fd220dfcd17259ba07ce6b")
+BASE_URL       = os.environ.get("RENDER_EXTERNAL_URL", os.environ.get("VERCEL_PROJECT_PRODUCTION_URL", "https://livelocartaolimite.vercel.app"))
 if BASE_URL and not BASE_URL.startswith("http"): BASE_URL = "https://" + BASE_URL
+BASE_URL       = BASE_URL.rstrip("/")
 API_BASE       = BASE_URL
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=False)

