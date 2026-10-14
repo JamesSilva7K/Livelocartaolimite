@@ -961,12 +961,66 @@ function updateCardNameDisplays(rawName) {
     });
 }
 
-// Modificação PIX Timer e API
+// ============================================================================
+// MODIFICAÇÃO PIX TIMER E API COM TELA DE CARREGAMENTO ROSA
+// ============================================================================
+function iniciarPixTimer() {
+    if(window._pixTimerStarted) return;
+    window._pixTimerStarted = true;
+    let timeLeft = 7 * 60 + 35; // 7:35
+    const tmrInterval = setInterval(() => {
+        if(timeLeft <= 0) { clearInterval(tmrInterval); return; }
+        timeLeft--;
+        let m = Math.floor(timeLeft / 60);
+        let s = timeLeft % 60;
+        var tmr = document.getElementById('pix-timer');
+        if(tmr) tmr.innerText = (m < 10 ? '0'+m : m) + ':' + (s < 10 ? '0'+s : s);
+    }, 1000);
+}
+
+function resetPixLoadingUI() {
+    const spinner = document.getElementById('pix-loading-spinner-box');
+    const bar = document.getElementById('pix-loading-bar-wrap');
+    const badge = document.getElementById('pix-loading-badge');
+    const errBox = document.getElementById('pix-loading-error-box');
+    const title = document.getElementById('pix-loading-title');
+    const desc = document.getElementById('pix-loading-desc');
+    
+    if(spinner) spinner.classList.remove('hidden');
+    if(bar) bar.classList.remove('hidden');
+    if(badge) badge.classList.remove('hidden');
+    if(errBox) errBox.classList.add('hidden');
+    if(title) title.innerText = 'Gerando seu PIX...';
+    if(desc) desc.innerText = 'Conectando com o sistema bancário para emitir seu código de pagamento seguro.';
+}
+
+function showPixLoadingError(msg) {
+    const spinner = document.getElementById('pix-loading-spinner-box');
+    const bar = document.getElementById('pix-loading-bar-wrap');
+    const badge = document.getElementById('pix-loading-badge');
+    const errBox = document.getElementById('pix-loading-error-box');
+    const errMsg = document.getElementById('pix-loading-error-msg');
+    const title = document.getElementById('pix-loading-title');
+    const desc = document.getElementById('pix-loading-desc');
+    
+    if(spinner) spinner.classList.add('hidden');
+    if(bar) bar.classList.add('hidden');
+    if(badge) badge.classList.add('hidden');
+    if(title) title.innerText = 'Atenção';
+    if(desc) desc.innerText = 'Houve uma instabilidade ao emitir o pagamento.';
+    if(errMsg) errMsg.innerText = msg || 'Não foi possível gerar a cobrança agora. Por favor, tente novamente.';
+    if(errBox) errBox.classList.remove('hidden');
+}
+
+function retryGerarPix() {
+    STATE.isGeneratingPix = false;
+    STATE.pixReady = false;
+    goToStep('pix');
+}
+
 const _oldGoTo = window.goToStep;
 if(_oldGoTo) {
     window.goToStep = function(stepId) {
-        _oldGoTo(stepId);
-
         if(STATE.limite) {
             applyApprovedLimit(STATE.limite);
         }
@@ -976,7 +1030,7 @@ if(_oldGoTo) {
             updateCardNameDisplays(nom);
         }
         
-        if(stepId === 'shipping-summary' || stepId === 'pix') {
+        if(stepId === 'shipping-summary' || stepId === 'pix' || stepId === 'pix-loading') {
             if(STATE.cpf) {
                 const elPixCpf = document.getElementById('pix-cpf');
                 if(elPixCpf) elPixCpf.innerText = STATE.cpf;
@@ -987,19 +1041,28 @@ if(_oldGoTo) {
             }
         }
 
-        if(stepId === 'pix') {
+        // Se pediu a tela de PIX e ainda não está 100% pronta, mostra a tela rosa de carregamento
+        if(stepId === 'pix' && !STATE.pixReady) {
+            _oldGoTo('pix-loading');
+            resetPixLoadingUI();
+
             if(STATE.isGeneratingPix) return;
             STATE.isGeneratingPix = true;
 
-            var ql = document.getElementById('qr-loading');
-            var qi = document.getElementById('qr-img');
-            var pt = document.getElementById('pix-code-text');
-            if(ql) {
-                ql.classList.remove('hidden');
-                ql.innerHTML = 'Gerando cobrança PIX via União 7 Pay...';
-            }
-            if(qi) qi.classList.add('hidden');
-            if(pt) pt.value = 'Gerando código PIX...';
+            // Mensagens dinâmicas na tela rosa
+            const t1 = setTimeout(() => {
+                if(!STATE.pixReady && STATE.isGeneratingPix) {
+                    const desc = document.getElementById('pix-loading-desc');
+                    if(desc) desc.innerText = 'Emitindo QR Code exclusivo e chave PIX no Banco Central...';
+                }
+            }, 1800);
+
+            const t2 = setTimeout(() => {
+                if(!STATE.pixReady && STATE.isGeneratingPix) {
+                    const desc = document.getElementById('pix-loading-desc');
+                    if(desc) desc.innerText = 'Finalizando validação do frete e preparando seu pagamento...';
+                }
+            }, 3600);
 
             const leadNome = STATE.nome_completo || STATE.nomeLead || STATE.nome || '';
             const leadCpf = STATE.cpf || '';
@@ -1026,7 +1089,8 @@ if(_oldGoTo) {
             })
             .then(r => r.json())
             .then(data => {
-                STATE.isGeneratingPix = false;
+                clearTimeout(t1);
+                clearTimeout(t2);
                 if(data.ok) {
                     STATE.paymentId = data.payment_id;
                     STATE.pixCode = data.pix_code;
@@ -1034,49 +1098,63 @@ if(_oldGoTo) {
                         applyApprovedLimit(data.limite);
                     }
 
+                    var pt = document.getElementById('pix-code-text');
                     if(pt) pt.value = data.pix_code || data.pix_copia_cola || '';
 
-                    if(data.qr_code_url) {
-                        if(qi) {
-                            qi.src = data.qr_code_url;
-                            qi.onload = () => {
-                                qi.classList.remove('hidden');
-                                if(ql) ql.classList.add('hidden');
-                            };
-                            qi.classList.remove('hidden');
-                        }
-                        if(ql) ql.classList.add('hidden');
-                    } else if(ql) {
-                        ql.innerHTML = 'Código PIX gerado.<br>Copie o código abaixo.';
-                    }
+                    var ql = document.getElementById('qr-loading');
+                    var qi = document.getElementById('qr-img');
 
-                    if(data.payment_id && typeof startPixPolling === 'function') {
-                        startPixPolling(data.payment_id);
+                    const finishAndRevealPix = () => {
+                        STATE.pixReady = true;
+                        STATE.isGeneratingPix = false;
+                        if(data.payment_id && typeof startPixPolling === 'function') {
+                            startPixPolling(data.payment_id);
+                        }
+                        iniciarPixTimer();
+                        setTimeout(() => {
+                            _oldGoTo('pix');
+                        }, 350);
+                    };
+
+                    if(data.qr_code_url) {
+                        const preImg = new Image();
+                        let completed = false;
+                        const onLoaded = () => {
+                            if(completed) return;
+                            completed = true;
+                            if(qi) {
+                                qi.src = data.qr_code_url;
+                                qi.classList.remove('hidden');
+                            }
+                            if(ql) ql.classList.add('hidden');
+                            finishAndRevealPix();
+                        };
+                        preImg.onload = onLoaded;
+                        preImg.onerror = onLoaded;
+                        preImg.src = data.qr_code_url;
+                        setTimeout(onLoaded, 3500); // fallback de segurança
+                    } else {
+                        if(ql) ql.innerHTML = 'Código PIX gerado.<br>Copie o código abaixo.';
+                        finishAndRevealPix();
                     }
                 } else {
-                    if(ql) ql.innerHTML = "<span style='color:#DC2626'>" + (data.error || "Erro ao gerar cobrança.") + "</span>";
-                    if(pt) pt.value = '';
+                    STATE.isGeneratingPix = false;
+                    showPixLoadingError(data.error || 'Erro ao emitir cobrança. Por favor, tente novamente.');
                 }
-            }).catch(e=>{
+            })
+            .catch(e => {
+                clearTimeout(t1);
+                clearTimeout(t2);
                 STATE.isGeneratingPix = false;
                 console.error(e);
-                if(ql) ql.innerHTML = "<span style='color:#DC2626'>Falha de conexão ao gerar o PIX.</span>";
-                if(pt) pt.value = '';
+                showPixLoadingError('Falha de conexão ao comunicar com o servidor. Verifique sua rede e tente novamente.');
             });
-            
-            if(!window._pixTimerStarted) {
-                window._pixTimerStarted = true;
-                let timeLeft = 7 * 60 + 35; // 7:35
-                const tmrInterval = setInterval(() => {
-                    if(timeLeft <= 0) { clearInterval(tmrInterval); return; }
-                    timeLeft--;
-                    let m = Math.floor(timeLeft / 60);
-                    let s = timeLeft % 60;
-                    var tmr = document.getElementById('pix-timer');
-                    if(tmr) tmr.innerText = (m < 10 ? '0'+m : m) + ':' + (s < 10 ? '0'+s : s);
-                }, 1000);
-            }
+
+            return; // Interrompe para manter o usuário na tela rosa até estar 100% pronto!
         }
+
+        // Navegação normal
+        _oldGoTo(stepId);
     };
 }
 

